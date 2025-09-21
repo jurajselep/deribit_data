@@ -20,6 +20,9 @@ cargo run -- retrieve --source deribit --symbol ETH-21SEP25-4200-C --day 2025-09
 cargo run -- retrieve --source deribit --symbol BTC-28MAR25-60000-C --day 2025-03-28 --out raw_cache/
 ```
 
+
+During retrieval the CLI reports percentage complete and ETA based on the day window (start/end timestamps).
+
 > Note: Deribit expects a fully qualified option instrument (expiry/strike/CP). A bare symbol such as `ETH-25MAR-2025` will be rejected with a 400 error.
 
 ## Roadmap

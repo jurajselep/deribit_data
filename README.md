@@ -36,6 +36,9 @@ cargo run -- retrieve \
   --resume
 ```
 
+
+The CLI prints per-chunk progress (percentage and ETA) while pages stream in; ETA is derived from trade timestamps across the requested UTC day.
+
 ## Design Variations
 
 - Retrieval now persists a manifest per (symbol, day) partition, including resume tokens and per-part statistics, but the on-disk block layout still mirrors the baseline specification; ADR-0001 remains unchanged until we adopt a substantive storage variation.

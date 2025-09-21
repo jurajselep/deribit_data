@@ -89,22 +89,30 @@ impl Source for DeribitSource {
 
             self.limiter.until_ready().await;
 
-            let mut request = self
+            let start_ms = resume_token
+                .as_ref()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(options.start_ms);
+
+            if start_ms >= options.end_ms {
+                break;
+            }
+
+            let start_str = start_ms.to_string();
+            let end_str = options.end_ms.to_string();
+            let response = self
                 .client
                 .get("https://www.deribit.com/api/v2/public/get_last_trades_by_instrument_and_time")
                 .query(&[
                     ("instrument_name", spec.symbol.as_str()),
                     ("count", "1000"),
                     ("include_oldest", "true"),
-                ]);
-
-            if let Some(token) = &resume_token {
-                request = request.query(&[("start_timestamp", token.as_str())]);
-            } else {
-                request = request.query(&[("start_timestamp", "0")]);
-            }
-
-            let response = request.send().await.context("deribit request")?;
+                    ("start_timestamp", start_str.as_str()),
+                    ("end_timestamp", end_str.as_str()),
+                ])
+                .send()
+                .await
+                .context("deribit request")?;
 
             let status = response.status();
             let body_bytes = response.bytes().await?;
@@ -173,13 +181,23 @@ impl Source for DeribitSource {
             };
             chunks.push(chunk);
 
+            if trades.is_empty() {
+                break;
+            }
+
+            if let Some(last_ms) = last_ts {
+                if last_ms >= options.end_ms {
+                    break;
+                }
+            }
+
             let has_more = json
                 .get("result")
                 .and_then(|r| r.get("has_more"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            if !has_more || trades.len() < 1000 {
+            if !has_more {
                 break;
             }
 
