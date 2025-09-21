@@ -45,6 +45,33 @@ The CLI prints per-chunk progress (percentage and ETA) while pages stream in; ET
 - ⚠️ Deribit requires using the full option instrument name (including expiry, strike, and call/put suffix). If you receive `Deribit rejected instrument...` ensure you pass values like `ETH-21MAR25-4100-C` or `BTC-28MAR25-60000-C`.
 
 
+
+## Lean 4 Arbitrage-Free SVI Surface
+
+The `svi_surface/` folder contains a small Lean 4 project that models an
+arbitrage-free SVI volatility slice in a purely functional way. It checks
+classic Gatheral butterfly conditions and prints diagnostics for a sample
+set of log-moneyness points.
+
+```bash
+cd svi_surface
+lake build                     # compile the Lean library
+lake exe svi-surface-test      # run the CLI diagnostics output
+```
+
+Sample output:
+
+```
+Arbitrage free? true
+Sample variance slice:
+  k=-2.0, w=0.289654
+  k=-1.0, w=0.179198
+  k=0.0, w=0.079000
+  k=1.0, w=0.108231
+  k=2.0, w=0.227710
+Wing diagnostics passed? true
+```
+
 ## Roadmap
 
 - **Storage engine**: implement columnar block builder and append-only writer with compression (lz4/zstd), anchors, footers, Bloom filters, and WAL-based recovery.

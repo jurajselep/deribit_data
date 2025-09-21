@@ -33,3 +33,19 @@ During retrieval the CLI reports percentage complete and ETA based on the day wi
 - Broaden retrieval to support quotes/both feeds, resume manifests, dedup spill to disk, and configurable rate/backoff.
 - Add comprehensive tests (retrieve roundtrip, dedup, corruption) and end-to-end benchmarks.
 - Document prompt inversion decisions in ADR-0001 when format changes are introduced.
+
+
+### Lean 4 SVI Helper
+
+The repository also includes `../svi_surface/`, a Lean 4 project that
+implements an arbitrage-free SVI slice.
+
+```bash
+cd ../svi_surface
+lake build
+lake exe svi-surface-test
+```
+
+The executable prints whether the example parameters satisfy the classic
+Gatheral no-arbitrage constraints and dumps variance samples across a few
+log-moneyness points.
