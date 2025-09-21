@@ -2,9 +2,12 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{TimeZone, Utc};
 use owo_colors::OwoColorize;
 use reqwest::{Client, StatusCode};
-use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::from_slice;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{from_slice, to_vec_pretty};
 use std::collections::HashMap;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const API_HOSTS: [&str; 2] = [
@@ -13,8 +16,10 @@ const API_HOSTS: [&str; 2] = [
 ];
 const INSTRUMENTS_PATH: &str = "/public/get_instruments";
 const TRADES_PATH: &str = "/public/get_last_trades_by_instrument_and_time";
+const CACHE_DIR: &str = ".deribit_cache";
+const INSTRUMENT_CACHE_PREFIX: &str = "instruments";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Instrument {
     name: String,
     creation: u64,
@@ -103,6 +108,12 @@ struct TradeSample {
     trades: usize,
     has_more: Option<bool>,
     stats: RequestStats,
+}
+
+struct InstrumentFetchResult {
+    instruments: Vec<Instrument>,
+    cache_path: PathBuf,
+    from_cache: bool,
 }
 
 /// Find the oldest ETH option instrument with recorded trades and print a summary.
@@ -246,14 +257,31 @@ async fn fetch_all_instruments(client: &Client) -> Result<HashMap<String, Instru
 
     for host in API_HOSTS {
         match fetch_instruments_from_host(client, host).await {
-            Ok(host_instruments) => {
-                println!(
-                    "{} {} {} {}",
-                    "Fetched".bold().blue(),
-                    host_instruments.len().to_string().bold().cyan(),
-                    "expired ETH options metadata from".dimmed(),
-                    host.cyan()
-                );
+            Ok(InstrumentFetchResult {
+                instruments: host_instruments,
+                cache_path,
+                from_cache,
+            }) => {
+                let count = host_instruments.len();
+                if from_cache {
+                    println!(
+                        "{} {} {} {} ({})",
+                        "Using cache".bold().blue(),
+                        count.to_string().bold().cyan(),
+                        "expired ETH options metadata for".dimmed(),
+                        host.cyan(),
+                        cache_path.display()
+                    );
+                } else {
+                    println!(
+                        "{} {} {} {} ({})",
+                        "Fetched".bold().blue(),
+                        count.to_string().bold().cyan(),
+                        "expired ETH options metadata from".dimmed(),
+                        host.cyan(),
+                        cache_path.display()
+                    );
+                }
                 for inst in host_instruments {
                     instruments
                         .entry(inst.name.clone())
@@ -276,13 +304,23 @@ async fn fetch_all_instruments(client: &Client) -> Result<HashMap<String, Instru
 }
 
 /// Fetch all expired ETH option instruments from a specific host.
-async fn fetch_instruments_from_host(client: &Client, host: &str) -> Result<Vec<Instrument>> {
+async fn fetch_instruments_from_host(client: &Client, host: &str) -> Result<InstrumentFetchResult> {
     let query = [("currency", "ETH"), ("kind", "option"), ("expired", "true")];
     let context = format!("instrument request to {host}");
+    let cache_path = instrument_cache_path(host);
+
+    if let Some(cached) = load_cached_instruments(&cache_path)? {
+        return Ok(InstrumentFetchResult {
+            instruments: cached,
+            cache_path,
+            from_cache: true,
+        });
+    }
+
     let FetchResult { data: response, .. }: FetchResult<InstrumentsResponse> =
         get_json(client, host, INSTRUMENTS_PATH, &query, context.as_str()).await?;
 
-    Ok(response
+    let instruments: Vec<Instrument> = response
         .result
         .into_iter()
         .map(|record| Instrument {
@@ -296,7 +334,73 @@ async fn fetch_instruments_from_host(client: &Client, host: &str) -> Result<Vec<
             quote_currency: record.quote_currency,
             underlying_index: record.underlying_index,
         })
-        .collect())
+        .collect();
+
+    if let Err(err) = store_cached_instruments(&cache_path, &instruments) {
+        eprintln!(
+            "{}",
+            format!("Warning: failed to persist instrument cache for {host}: {err}")
+                .bold()
+                .red()
+        );
+    }
+
+    Ok(InstrumentFetchResult {
+        instruments,
+        cache_path,
+        from_cache: false,
+    })
+}
+
+fn instrument_cache_path(host: &str) -> PathBuf {
+    let trimmed = host
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let sanitized = trimmed.replace('/', "_");
+    PathBuf::from(CACHE_DIR).join(format!("{INSTRUMENT_CACHE_PREFIX}_{sanitized}.json"))
+}
+
+fn load_cached_instruments(path: &Path) -> Result<Option<Vec<Instrument>>> {
+    match fs::read(path) {
+        Ok(bytes) => match from_slice::<Vec<Instrument>>(&bytes) {
+            Ok(data) => {
+                println!(
+                    "{} {}",
+                    "Loaded instrument cache from".bold().blue(),
+                    path.display()
+                );
+                Ok(Some(data))
+            }
+            Err(err) => {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "Warning: instrument cache at {} is invalid: {err}",
+                        path.display()
+                    )
+                    .bold()
+                    .red()
+                );
+                Ok(None)
+            }
+        },
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn store_cached_instruments(path: &Path, instruments: &[Instrument]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let data = to_vec_pretty(instruments)?;
+    fs::write(path, data)?;
+    println!(
+        "{} {}",
+        "Stored instrument cache at".bold().blue(),
+        path.display()
+    );
+    Ok(())
 }
 
 /// Attempt to obtain the oldest recorded trades for an instrument across available hosts.
