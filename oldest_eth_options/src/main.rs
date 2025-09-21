@@ -3,6 +3,7 @@ use chrono::{TimeZone, Utc};
 use owo_colors::OwoColorize;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::from_slice;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,8 @@ struct TradesResponse {
 #[derive(Deserialize)]
 struct TradesResult {
     trades: Vec<Trade>,
+    #[serde(default)]
+    has_more: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,32 +78,62 @@ struct Trade {
     timestamp: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
+struct RequestStats {
+    total_elapsed: Duration,
+    bytes: usize,
+}
+
+struct FetchResult<T> {
+    data: T,
+    stats: RequestStats,
+}
+
+struct TradeFetch {
+    trades: Vec<Trade>,
+    has_more: Option<bool>,
+    stats: RequestStats,
+    host: String,
+}
+
+#[derive(Clone)]
+struct TradeSample {
+    instrument: String,
+    host: String,
+    trades: usize,
+    has_more: Option<bool>,
+    stats: RequestStats,
+}
+
 /// Find the oldest ETH option instrument with recorded trades and print a summary.
 #[tokio::main]
 async fn main() -> Result<()> {
     let client = Client::new();
 
-    let instruments = fetch_all_instruments(&client).await?;
-    let mut instruments: Vec<_> = instruments.into_values().collect();
-    instruments.sort_by_key(|inst| inst.creation);
+    let instruments_map = fetch_all_instruments(&client).await?;
+    let mut instrument_list: Vec<_> = instruments_map.into_values().collect();
+    instrument_list.sort_by_key(|inst| inst.creation);
 
-    if instruments.is_empty() {
+    if instrument_list.is_empty() {
         return Err(anyhow!(
             "no ETH option instruments found from either Deribit host"
         ));
     }
+
+    let total_instruments = instrument_list.len();
 
     println!(
         "{} {}",
         "Total unique expired ETH options discovered:"
             .bold()
             .bright_white(),
-        instruments.len().to_string().bold().cyan()
+        total_instruments.to_string().bold().cyan()
     );
 
     let mut attempts_logged = 0usize;
+    let mut trade_samples: Vec<TradeSample> = Vec::new();
 
-    for instrument in instruments {
+    for instrument in &instrument_list {
         // Avoid spamming output by only logging the first few probes.
         if attempts_logged < 3 {
             println!(
@@ -121,7 +154,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        match fetch_oldest_trades(&client, &instrument.name).await? {
+        match fetch_oldest_trades(&client, &instrument.name, &mut trade_samples).await? {
             Some(trades) if !trades.is_empty() => {
                 let creation_iso = format_timestamp(instrument.creation);
                 let expiration_iso = instrument
@@ -190,6 +223,7 @@ async fn main() -> Result<()> {
                 for trade in trades.iter().take(10) {
                     print_trade(trade, &instrument);
                 }
+                print_estimation(total_instruments, &trade_samples);
                 return Ok(());
             }
             _ => {}
@@ -202,6 +236,7 @@ async fn main() -> Result<()> {
             .red()
             .bold()
     );
+    print_estimation(total_instruments, &trade_samples);
     Ok(())
 }
 
@@ -244,7 +279,7 @@ async fn fetch_all_instruments(client: &Client) -> Result<HashMap<String, Instru
 async fn fetch_instruments_from_host(client: &Client, host: &str) -> Result<Vec<Instrument>> {
     let query = [("currency", "ETH"), ("kind", "option"), ("expired", "true")];
     let context = format!("instrument request to {host}");
-    let response: InstrumentsResponse =
+    let FetchResult { data: response, .. }: FetchResult<InstrumentsResponse> =
         get_json(client, host, INSTRUMENTS_PATH, &query, context.as_str()).await?;
 
     Ok(response
@@ -265,11 +300,26 @@ async fn fetch_instruments_from_host(client: &Client, host: &str) -> Result<Vec<
 }
 
 /// Attempt to obtain the oldest recorded trades for an instrument across available hosts.
-async fn fetch_oldest_trades(client: &Client, instrument_name: &str) -> Result<Option<Vec<Trade>>> {
+async fn fetch_oldest_trades(
+    client: &Client,
+    instrument_name: &str,
+    samples: &mut Vec<TradeSample>,
+) -> Result<Option<Vec<Trade>>> {
     for host in API_HOSTS {
         match fetch_trades_from_host(client, host, instrument_name).await {
-            Ok(trades) if !trades.is_empty() => return Ok(Some(trades)),
-            Ok(_) => continue,
+            Ok(fetch) => {
+                samples.push(TradeSample {
+                    instrument: instrument_name.to_string(),
+                    host: fetch.host.clone(),
+                    trades: fetch.trades.len(),
+                    has_more: fetch.has_more,
+                    stats: fetch.stats.clone(),
+                });
+
+                if !fetch.trades.is_empty() {
+                    return Ok(Some(fetch.trades));
+                }
+            }
             Err(err) => eprintln!(
                 "{}",
                 format!("Warning: failed to fetch trades for {instrument_name} from {host}: {err}")
@@ -287,7 +337,7 @@ async fn fetch_trades_from_host(
     client: &Client,
     host: &str,
     instrument_name: &str,
-) -> Result<Vec<Trade>> {
+) -> Result<TradeFetch> {
     let query = [
         ("instrument_name", instrument_name),
         ("start_timestamp", "0"),
@@ -295,10 +345,20 @@ async fn fetch_trades_from_host(
         ("include_oldest", "true"),
     ];
     let context = format!("trades request for {instrument_name} via {host}");
-    let response: TradesResponse =
+    let FetchResult {
+        data: response,
+        stats,
+    }: FetchResult<TradesResponse> =
         get_json(client, host, TRADES_PATH, &query, context.as_str()).await?;
 
-    Ok(response.result.trades)
+    let TradesResponse { result } = response;
+
+    Ok(TradeFetch {
+        trades: result.trades,
+        has_more: result.has_more,
+        stats,
+        host: host.to_string(),
+    })
 }
 
 /// Issue a GET request, log timing details, and deserialize the JSON payload into the requested type.
@@ -308,7 +368,7 @@ async fn get_json<T>(
     path: &str,
     query: &[(&str, &str)],
     context: &str,
-) -> Result<T>
+) -> Result<FetchResult<T>>
 where
     T: DeserializeOwned,
 {
@@ -317,33 +377,19 @@ where
     let start = Instant::now();
     let request = client.get(&url).query(&query);
     let response_result = request.send().await;
-    let elapsed = start.elapsed();
     let query_repr = format!("{:?}", query);
 
-    match &response_result {
-        Ok(resp) => {
-            let status = resp.status();
-            let line = format!(
-                "{} {} params {} -> {} {}",
-                "HTTP GET".bold().blue(),
-                url.cyan(),
-                format!("{}", query_repr.dimmed()),
-                color_status(status),
-                color_duration(elapsed)
-            );
-            println!("{}", line);
-        }
-        Err(err) => {
-            let line = format!(
-                "{} {} params {} -> {} {}",
-                "HTTP GET".bold().red(),
-                url.cyan(),
-                format!("{}", query_repr.dimmed()),
-                format!("{}", format!("transport error ({err})").bold().red()),
-                color_duration(elapsed)
-            );
-            println!("{}", line);
-        }
+    if let Err(err) = &response_result {
+        let elapsed = start.elapsed();
+        let line = format!(
+            "{} {} params {} -> {} {}",
+            "HTTP GET".bold().red(),
+            url.cyan(),
+            format!("{}", query_repr.dimmed()),
+            format!("{}", format!("transport error ({err})").bold().red()),
+            color_duration(elapsed)
+        );
+        println!("{}", line);
     }
 
     let response = response_result.with_context(|| format!("{context}: sending request failed"))?;
@@ -353,19 +399,48 @@ where
         return Err(anyhow!("{context}: non-success status {status}"));
     }
 
-    let parse_start = Instant::now();
-    let payload = response
-        .json::<T>()
+    let body_start = Instant::now();
+    let raw_body = response
+        .bytes()
         .await
-        .with_context(|| format!("{context}: parsing response body"))?;
+        .with_context(|| format!("{context}: reading response body"))?;
+    let body_elapsed = body_start.elapsed();
+
+    let parse_start = Instant::now();
+    let payload =
+        from_slice::<T>(&raw_body).with_context(|| format!("{context}: parsing response body"))?;
+    let parse_elapsed = parse_start.elapsed();
+
+    let total_elapsed = start.elapsed();
+    let bytes = raw_body.len();
+    let stats = RequestStats {
+        total_elapsed,
+        bytes,
+    };
+
+    let line = format!(
+        "{} {} params {} -> {} {} {}",
+        "HTTP GET".bold().blue(),
+        url.cyan(),
+        format!("{}", query_repr.dimmed()),
+        color_status(status),
+        color_duration(total_elapsed),
+        format!("{}", format!("{} bytes", bytes).dimmed())
+    );
+    println!("{}", line);
+
     println!(
-        "{} {} {}",
+        "{} {} {} {}",
         "Decoded JSON".dimmed(),
         url.cyan(),
-        color_duration(parse_start.elapsed())
+        color_duration(body_elapsed + parse_elapsed),
+        format!("{}", format!("parse {:.2?}", parse_elapsed).dimmed())
     );
 
-    Ok(payload)
+    Ok(FetchResult {
+        data: payload,
+        stats,
+    })
 }
 
 fn color_status(status: StatusCode) -> String {
@@ -474,4 +549,235 @@ fn format_timestamp(ms: u64) -> String {
         .single()
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_else(|| ms.to_string())
+}
+
+fn print_estimation(total_instruments: usize, samples: &[TradeSample]) {
+    if total_instruments == 0 {
+        return;
+    }
+
+    match estimate_download_requirements(total_instruments, samples) {
+        Some(summary) => {
+            println!();
+            println!(
+                "{} {}",
+                "Estimated requests:".bold().bright_white(),
+                format!("{:.0}", summary.total_requests).bold().cyan()
+            );
+            println!(
+                "{} {} (~{:.1} min)",
+                "Estimated download time:".bold().bright_white(),
+                format_duration(summary.total_time_secs).bold().green(),
+                summary.total_time_secs / 60.0
+            );
+            println!(
+                "{} {} ({:.2} MB)",
+                "Estimated data volume:".bold().bright_white(),
+                human_bytes(summary.total_bytes).bold().yellow(),
+                summary.total_bytes / (1024.0 * 1024.0)
+            );
+            if let Some(host) = &summary.dominant_host {
+                println!(
+                    "{} {}",
+                    "Likely primary host:".bold().bright_white(),
+                    host.cyan()
+                );
+            }
+            println!(
+                "{} {}",
+                "Assumptions:".bold().dimmed(),
+                format!(
+                    "{} samples; {:.1}% instruments returned trades; {:.1}% required pagination (count=100)",
+                    summary.sample_size,
+                    summary.positive_ratio * 100.0,
+                    summary.has_more_ratio * 100.0
+                )
+                .dimmed()
+            );
+        }
+        None => {
+            if !samples.is_empty() {
+                println!(
+                    "{}",
+                    "Insufficient trade-bearing samples to estimate download duration.".dimmed()
+                );
+            } else {
+                println!(
+                    "{}",
+                    "No trade samples collected; cannot estimate download requirements.".dimmed()
+                );
+            }
+        }
+    }
+}
+
+fn estimate_download_requirements(
+    total_instruments: usize,
+    samples: &[TradeSample],
+) -> Option<EstimationSummary> {
+    if total_instruments == 0 || samples.is_empty() {
+        return None;
+    }
+
+    let mut per_instrument: HashMap<String, Vec<&TradeSample>> = HashMap::new();
+    for sample in samples {
+        per_instrument
+            .entry(sample.instrument.clone())
+            .or_default()
+            .push(sample);
+    }
+
+    let mut aggregates = Vec::new();
+    for (_instrument, entries) in per_instrument {
+        let chosen = entries
+            .iter()
+            .copied()
+            .find(|s| s.trades > 0)
+            .unwrap_or(entries[0]);
+        aggregates.push((
+            chosen.trades,
+            chosen.has_more.unwrap_or(false),
+            chosen.stats.clone(),
+            chosen.host.clone(),
+        ));
+    }
+
+    if aggregates.is_empty() {
+        return None;
+    }
+
+    let sample_size = aggregates.len();
+    let positive_count = aggregates
+        .iter()
+        .filter(|(trades, _, _, _)| *trades > 0)
+        .count();
+    if positive_count == 0 {
+        return None;
+    }
+
+    let zero_count = sample_size - positive_count;
+    let positive_duration_sum: f64 = aggregates
+        .iter()
+        .filter(|(trades, _, _, _)| *trades > 0)
+        .map(|(_, _, stats, _)| stats.total_elapsed.as_secs_f64())
+        .sum();
+    let positive_bytes_sum: f64 = aggregates
+        .iter()
+        .filter(|(trades, _, _, _)| *trades > 0)
+        .map(|(_, _, stats, _)| stats.bytes as f64)
+        .sum();
+    let avg_duration_positive = positive_duration_sum / positive_count as f64;
+    let avg_bytes_positive = positive_bytes_sum / positive_count as f64;
+
+    let (avg_duration_zero, avg_bytes_zero) = if zero_count > 0 {
+        let zero_duration_sum: f64 = aggregates
+            .iter()
+            .filter(|(trades, _, _, _)| *trades == 0)
+            .map(|(_, _, stats, _)| stats.total_elapsed.as_secs_f64())
+            .sum();
+        let zero_bytes_sum: f64 = aggregates
+            .iter()
+            .filter(|(trades, _, _, _)| *trades == 0)
+            .map(|(_, _, stats, _)| stats.bytes as f64)
+            .sum();
+        (
+            zero_duration_sum / zero_count as f64,
+            zero_bytes_sum / zero_count as f64,
+        )
+    } else {
+        (avg_duration_positive, avg_bytes_positive)
+    };
+
+    let has_more_ratio = if positive_count > 0 {
+        aggregates
+            .iter()
+            .filter(|(trades, _, _, _)| *trades > 0)
+            .filter(|(_, has_more, _, _)| *has_more)
+            .count() as f64
+            / positive_count as f64
+    } else {
+        0.0
+    };
+
+    let mut host_counts: HashMap<String, usize> = HashMap::new();
+    for (_, _, _, host) in &aggregates {
+        *host_counts.entry(host.clone()).or_default() += 1;
+    }
+    let dominant_host = host_counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(host, _)| host);
+
+    let total_instruments_f = total_instruments as f64;
+    let positive_ratio = positive_count as f64 / sample_size as f64;
+    let base_positive_requests = positive_ratio * total_instruments_f;
+    let additional_requests = base_positive_requests * has_more_ratio;
+    let total_requests = total_instruments_f + additional_requests;
+
+    let estimated_positive_time = base_positive_requests * avg_duration_positive;
+    let estimated_zero_time = (total_instruments_f - base_positive_requests) * avg_duration_zero;
+    let estimated_additional_time = additional_requests * avg_duration_positive;
+    let total_time_secs = estimated_positive_time + estimated_zero_time + estimated_additional_time;
+
+    let estimated_positive_bytes = base_positive_requests * avg_bytes_positive;
+    let estimated_zero_bytes = (total_instruments_f - base_positive_requests) * avg_bytes_zero;
+    let estimated_additional_bytes = additional_requests * avg_bytes_positive;
+    let total_bytes = estimated_positive_bytes + estimated_zero_bytes + estimated_additional_bytes;
+
+    Some(EstimationSummary {
+        total_requests,
+        total_time_secs,
+        total_bytes,
+        positive_ratio,
+        has_more_ratio,
+        sample_size,
+        dominant_host,
+    })
+}
+
+struct EstimationSummary {
+    total_requests: f64,
+    total_time_secs: f64,
+    total_bytes: f64,
+    positive_ratio: f64,
+    has_more_ratio: f64,
+    sample_size: usize,
+    dominant_host: Option<String>,
+}
+
+fn human_bytes(bytes: f64) -> String {
+    if bytes.is_nan() || !bytes.is_finite() {
+        return "unknown".to_string();
+    }
+
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes;
+    let mut unit_index = 0;
+    while value >= 1024.0 && unit_index < units.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+    format!("{value:.2} {}", units[unit_index])
+}
+
+fn format_duration(seconds: f64) -> String {
+    if seconds.is_nan() || !seconds.is_finite() {
+        return "unknown".to_string();
+    }
+
+    let seconds = seconds.max(0.0);
+    if seconds < 60.0 {
+        return format!("{seconds:.1}s");
+    }
+
+    let total_secs = seconds.round() as u64;
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+
+    if hours > 0 {
+        format!("{}h {}m {}s", hours, minutes, secs)
+    } else {
+        format!("{}m {}s", minutes, secs)
+    }
 }
