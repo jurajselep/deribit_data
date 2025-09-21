@@ -16,8 +16,17 @@ curl 'https://www.deribit.com/api/v2/public/get_instruments?currency=ETH&kind=op
   | jq '.result[].instrument_name' | head
 
 # Retrieve sample ETH/BTC options
-cargo run -- retrieve --source deribit --symbol ETH-21MAR25-4100-C --day 2025-03-21 --out raw_cache/
+cargo run -- retrieve --source deribit --symbol ETH-21SEP25-4200-C --day 2025-09-21 --out raw_cache/
 cargo run -- retrieve --source deribit --symbol BTC-28MAR25-60000-C --day 2025-03-28 --out raw_cache/
 ```
 
 > Note: Deribit expects a fully qualified option instrument (expiry/strike/CP). A bare symbol such as `ETH-25MAR-2025` will be rejected with a 400 error.
+
+## Roadmap
+
+- Implement columnar block writer/reader with compression, anchors, CRC/xxhash, and Bloom filters.
+- Add ingestion pipeline for cached raw data (normalize, dedup, append-only storage).
+- Extend progress reporting (ingest/compress/write/verify, json events) and query planning (`--explain`).
+- Broaden retrieval to support quotes/both feeds, resume manifests, dedup spill to disk, and configurable rate/backoff.
+- Add comprehensive tests (retrieve roundtrip, dedup, corruption) and end-to-end benchmarks.
+- Document prompt inversion decisions in ADR-0001 when format changes are introduced.
