@@ -4,7 +4,9 @@
   "description": "Fast 3D volatility surface viewer with live data updates",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/fetchOptionsData.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/fetchOptionsData.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "fetch:options": "node scripts/fetchOptionsData.mjs"

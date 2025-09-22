@@ -10,6 +10,7 @@ if (typeof yahooFinance.suppressNotices === 'function') {
 const DEFAULT_SYMBOL = '^SPX'
 const DEFAULT_EXPIRATION_LIMIT = 6
 const OUTPUT_DIR = path.resolve(process.cwd(), 'data')
+const PUBLIC_OUTPUT_DIR = path.resolve(process.cwd(), 'public', 'data')
 
 async function main() {
   const symbol = process.argv[2] ?? DEFAULT_SYMBOL
@@ -54,7 +55,14 @@ async function main() {
   const filePath = path.join(OUTPUT_DIR, fileName)
   fs.writeFileSync(filePath, JSON.stringify(normalized, null, 2))
 
-  console.log(`Saved ${normalized.records.length} option strikes across ${normalized.expirations.length} expirations -> ${filePath}`)
+  fs.mkdirSync(PUBLIC_OUTPUT_DIR, { recursive: true })
+  const publicPath = path.join(PUBLIC_OUTPUT_DIR, 'latest.json')
+  fs.writeFileSync(publicPath, JSON.stringify(normalized, null, 2))
+
+  console.log(
+    `Saved ${normalized.records.length} option strikes across ${normalized.expirations.length} expirations -> ${filePath}`
+  )
+  console.log(`Updated public snapshot -> ${publicPath}`)
 }
 
 function normalizeOptions(symbol, quote, optionSets) {
@@ -65,7 +73,8 @@ function normalizeOptions(symbol, quote, optionSets) {
   const underlyingPrice = quote?.regularMarketPrice ?? null
 
   for (const { expiration: expirationTs, chain } of optionSets) {
-    const expiration = expirationTs ? new Date(expirationTs * 1000).toISOString().slice(0, 10) : null
+    const expirationMs = normalizeEpoch(expirationTs)
+    const expiration = expirationMs ? new Date(expirationMs).toISOString().slice(0, 10) : null
     if (expiration) {
       expirations.push(expiration)
     }
@@ -76,8 +85,15 @@ function normalizeOptions(symbol, quote, optionSets) {
 
       let optionType = null
       if (typeof leg.contractSymbol === 'string') {
-        if (/C$/i.test(leg.contractSymbol)) optionType = 'call'
-        if (/P$/i.test(leg.contractSymbol)) optionType = 'put'
+        const normalized = leg.contractSymbol.toUpperCase()
+        const match = normalized.match(/([CP])(\d{8})$/)
+        if (match) {
+          optionType = match[1] === 'C' ? 'call' : 'put'
+        } else if (normalized.endsWith('C')) {
+          optionType = 'call'
+        } else if (normalized.endsWith('P')) {
+          optionType = 'put'
+        }
       }
 
       records.push({
@@ -127,6 +143,20 @@ function computeMid(bid, ask) {
   }
   if (Number.isFinite(bid)) return bid
   if (Number.isFinite(ask)) return ask
+  return null
+}
+
+function normalizeEpoch(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.getTime()
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    if (!Number.isNaN(parsed)) return parsed
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1e12 ? value : value * 1000
+  }
   return null
 }
 

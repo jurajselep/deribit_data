@@ -1,5 +1,5 @@
 import { Hud } from './hud'
-import { createRandomDataFeed } from './randomDataFeed'
+import { createStaticDataFeed } from './staticDataFeed'
 import { SurfaceRenderer } from './surfaceRenderer'
 
 async function bootstrap() {
@@ -12,7 +12,7 @@ async function bootstrap() {
 
   const renderer = new SurfaceRenderer({ canvas })
   const hud = new Hud(hudEl)
-  const feed = createRandomDataFeed({ intervalMs: 180 })
+  const feed = createStaticDataFeed({ dataUrl: '/data/latest.json' })
 
   renderer.onFrame((stats) => hud.setFrame(stats))
 
@@ -20,7 +20,6 @@ async function bootstrap() {
   renderer.syncSnapshot(snapshot)
   hud.setSnapshot(snapshot)
   renderer.start()
-  feed.start()
 
   feed.subscribe((next) => {
     renderer.syncSnapshot(next)
