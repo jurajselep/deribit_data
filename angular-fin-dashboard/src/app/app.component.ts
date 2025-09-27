@@ -111,9 +111,9 @@ export class AppComponent implements OnInit, OnDestroy {
   private frameStatsRef = createInitialStats();
 
   private readonly initialSnapshot = nextTickerSlice(ROW_COUNT);
-  readonly rows = signal<TickerRow[]>([...this.initialSnapshot.rows]);
-  readonly summary = signal<TickerSummary>({ ...this.initialSnapshot.summary });
-  readonly frameStats = signal<FrameStats>({ ...this.frameStatsRef });
+  readonly rows = signal<TickerRow[]>(this.initialSnapshot.rows, { equal: () => false });
+  readonly summary = signal<TickerSummary>(this.initialSnapshot.summary, { equal: () => false });
+  readonly frameStats = signal<FrameStats>(this.frameStatsRef, { equal: () => false });
   readonly frameStatsView = computed(() => this.frameStats());
   readonly loopRunning = signal(true);
 
@@ -162,8 +162,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const dataDuration = performance.now() - dataStart;
 
     const signalStart = performance.now();
-    this.rows.set([...rowsRef]);
-    this.summary.set({ ...summaryRef });
+    this.rows.set(rowsRef);
+    this.summary.set(summaryRef);
     const signalDuration = performance.now() - signalStart;
 
     this.updateFrameStats({ frameSpacing: 0, dataDuration, signalDuration });
@@ -193,8 +193,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const dataDuration = performance.now() - dataStart;
 
     const signalStart = performance.now();
-    this.rows.set([...rowsRef]);
-    this.summary.set({ ...summaryRef });
+    this.rows.set(rowsRef);
+    this.summary.set(summaryRef);
     const signalDuration = performance.now() - signalStart;
 
     this.updateFrameStats({
@@ -247,7 +247,7 @@ export class AppComponent implements OnInit, OnDestroy {
     stats.statusText = stats.sampleCount < MIN_SAMPLES_FOR_ASSESSMENT ? 'Measuring...' : meetsBudget ? 'Yes' : 'No';
 
     this.updateHistory(totalCost, stats);
-    this.frameStats.set({ ...stats });
+    this.frameStats.set(stats);
   }
 
   private updateHistory(cost: number, stats: FrameStats): void {
@@ -313,7 +313,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private resetFrameStats(): void {
     this.frameStatsRef = createInitialStats();
-    this.frameStats.set({ ...this.frameStatsRef });
+    this.frameStats.set(this.frameStatsRef);
     this.frameHistory.fill(0);
     this.historyWriteIndex = 0;
     this.historyLength = 0;
