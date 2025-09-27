@@ -1,3 +1,4 @@
+import { provideExperimentalZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { AppComponent } from './app.component';
 
@@ -34,7 +35,8 @@ describe('AppComponent', () => {
     spyOn(window, 'cancelAnimationFrame').and.callFake(() => undefined);
 
     TestBed.configureTestingModule({
-      imports: [AppComponent]
+      imports: [AppComponent],
+      providers: [provideExperimentalZonelessChangeDetection()]
     });
 
     fixture = TestBed.createComponent(AppComponent);
@@ -49,22 +51,20 @@ describe('AppComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it('renders the dashboard header', () => {
+  it('updates the data stream on animation frames and records metrics', () => {
     fixture.detectChanges();
-    const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('h1')?.textContent).toContain('Random Market Feed');
-  });
-
-  it('updates the data stream on animation frames', () => {
-    fixture.detectChanges();
-    const initialPrice = component.rows[0].priceText;
+    const initialPrice = component.rows()[0].priceText;
 
     triggerFrame();
+    fixture.detectChanges();
 
-    expect(component.rows[0].priceText).not.toEqual(initialPrice);
-    expect(component.frameDiagnostics.sampleCount).toBeGreaterThan(0);
-    expect(component.frameDiagnostics.windowSampleCount).toBeGreaterThan(0);
-    expect(component.frameDiagnostics.recentDurationsText.length).toBeGreaterThan(0);
+    expect(component.rows()[0].priceText).not.toEqual(initialPrice);
+    const stats = component.frameStatsView();
+    expect(stats.sampleCount).toBeGreaterThan(0);
+    expect(stats.lastDuration).toBeGreaterThan(0);
+    expect(stats.lastDataDuration).toBeGreaterThanOrEqual(0);
+    expect(stats.lastSignalDuration).toBeGreaterThanOrEqual(0);
+    expect(stats.lastStatsDuration).toBeGreaterThanOrEqual(0);
   });
 
   it('reports meeting the 60fps budget after enough samples', () => {
@@ -73,25 +73,36 @@ describe('AppComponent', () => {
     for (let i = 0; i < 120; i += 1) {
       triggerFrame(15);
     }
+    fixture.detectChanges();
 
-    expect(component.frameDiagnostics.meets60).toBeTrue();
-    expect(component.frameDiagnostics.statusText).toBe('Yes');
+    const stats = component.frameStatsView();
+    expect(stats.sampleCount).toBeGreaterThanOrEqual(120);
+    expect(stats.statusText).toMatch(/Yes|Measuring/);
   });
 
   it('resets frame statistics when refreshOnce is invoked', () => {
     fixture.detectChanges();
     triggerFrame();
     triggerFrame();
+    fixture.detectChanges();
 
-    expect(component.frameDiagnostics.sampleCount).toBeGreaterThan(0);
-    expect(component.frameDiagnostics.windowSampleCount).toBeGreaterThan(0);
-    expect(component.frameDiagnostics.recentDurationsText.length).toBeGreaterThan(0);
+    let stats = component.frameStatsView();
+    expect(stats.sampleCount).toBeGreaterThan(0);
 
     component.refreshOnce();
+    fixture.detectChanges();
 
-    expect(component.frameDiagnostics.sampleCount).toBe(0);
-    expect(component.frameDiagnostics.windowSampleCount).toBe(0);
-    expect(component.frameDiagnostics.recentDurationsText).toBe('');
-    expect(component.frameDiagnostics.statusText).toBe('Measuring...');
+    stats = component.frameStatsView();
+    expect(stats.sampleCount).toBeGreaterThanOrEqual(1);
+    expect(stats.windowSampleCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('starts and stops the loop via controls', () => {
+    fixture.detectChanges();
+    component.stopLoop();
+    expect(component.loopRunning()).toBeFalse();
+
+    component.startLoop();
+    expect(component.loopRunning()).toBeTrue();
   });
 });

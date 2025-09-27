@@ -3,43 +3,53 @@
     <div>
       <h1>Random Market Feed (Angular)</h1>
       <p class="app__meta">
-        {{ rows.length }} symbols | {{ summary.gainers }} up / {{ summary.losers }} down | Avg move
-        {{ summary.averageMoveText }}
+        {{ rows().length }} symbols | {{ summary().gainers }} up / {{ summary().losers }} down | Avg move
+        {{ summary().averageMoveText }}
       </p>
       <div class="app__metrics">
-        <span class="app__metric"><span class="app__metric-label">Window:</span> {{ frameDiagnostics.windowSampleCount }}</span>
-        <span class="app__metric"><span class="app__metric-label">Min:</span> {{ frameDiagnostics.windowMinDurationText }} ms</span>
-        <span class="app__metric"><span class="app__metric-label">Max:</span> {{ frameDiagnostics.windowMaxDurationText }} ms</span>
-        <span class="app__metric"><span class="app__metric-label">P95:</span> {{ frameDiagnostics.windowP95DurationText }} ms</span>
-        <span class="app__metric"><span class="app__metric-label">P99:</span> {{ frameDiagnostics.windowP99DurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">Window:</span> {{ frameStatsView().windowSampleCount }}</span>
+        <span class="app__metric"><span class="app__metric-label">Min:</span> {{ frameStatsView().windowMinDurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">Max:</span> {{ frameStatsView().windowMaxDurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">P95:</span> {{ frameStatsView().windowP95DurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">P99:</span> {{ frameStatsView().windowP99DurationText }} ms</span>
       </div>
       <div class="app__history">
-        <span class="app__metric-label">Recent frames (ms):</span>
+        <span class="app__metric-label">Recent updates (ms):</span>
         <span class="app__history-values">
-          {{ frameDiagnostics.recentDurationsText || 'n/a' }}
+          {{ frameStatsView().recentDurationsText || 'n/a' }}
         </span>
       </div>
     </div>
 
     <div class="app__actions">
-      <span class="app__timestamp">Last tick: {{ summary.lastUpdatedText }}</span>
+      <span class="app__timestamp">Last tick: {{ summary().lastUpdatedText }}</span>
       <span class="app__fps">
-        Frame (last):
-        {{ frameDiagnostics.lastDurationText }} ms |
-        {{ frameDiagnostics.instantFpsText }} fps
+        Frame spacing (last):
+        {{ frameStatsView().lastFrameSpacingText }} ms |
+        {{ frameStatsView().instantFpsText }} fps
+      </span>
+      <span class="app__fps">
+        Update (last):
+        {{ frameStatsView().lastDurationText }} ms |
+        data {{ frameStatsView().lastDataDurationText }} ms |
+        signals {{ frameStatsView().lastSignalDurationText }} ms |
+        stats {{ frameStatsView().lastStatsDurationText }} ms
       </span>
       <span
         class="app__fps"
-        [class.app__fps--good]="frameDiagnostics.meets60"
-        [class.app__fps--cold]="!frameDiagnostics.meets60 && frameDiagnostics.sampleCount >= 10"
+        [class.app__fps--good]="frameStatsView().meets60"
+        [class.app__fps--cold]="!frameStatsView().meets60 && frameStatsView().sampleCount >= 10"
       >
-        Frame (avg):
-        {{ frameDiagnostics.averageDurationText }} ms |
-        {{ frameDiagnostics.averageFpsText }} fps |
+        Update (avg):
+        {{ frameStatsView().averageDurationText }} ms |
         60 fps ready?
-        <strong>{{ frameDiagnostics.statusText }}</strong>
+        <strong>{{ frameStatsView().statusText }}</strong>
       </span>
-      <button type="button" (click)="refreshOnce()">Reshuffle</button>
+      <div class="app__buttons">
+        <button type="button" (click)="startLoop()" [disabled]="loopRunning()">Start loop</button>
+        <button type="button" class="button--stop" (click)="stopLoop()" [disabled]="!loopRunning()">Stop loop</button>
+        <button type="button" (click)="refreshOnce()">Reshuffle</button>
+      </div>
     </div>
   </header>
 
@@ -57,7 +67,7 @@
       </thead>
       <tbody>
         <tr
-          *ngFor="let row of rows; trackBy: trackBySymbol"
+          *ngFor="let row of rows(); trackBy: trackBySymbol"
           [ngClass]="{ up: row.change > 0, down: row.change < 0 }"
         >
           <td>{{ row.symbol }}</td>

@@ -1,11 +1,4 @@
-import {
-  ChangeDetectionStrategy,
-  ChangeDetectorRef,
-  Component,
-  NgZone,
-  OnDestroy,
-  OnInit
-} from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, signal } from '@angular/core';
 import { NgClass, NgFor } from '@angular/common';
 import {
   defaultFrameDuration,
@@ -23,6 +16,7 @@ const RECENT_HISTORY_SIZE = 12;
 type FrameStats = {
   sampleCount: number;
   totalDuration: number;
+  totalFrameSpacing: number;
   lastDuration: number;
   lastDurationText: string;
   averageDuration: number;
@@ -31,6 +25,8 @@ type FrameStats = {
   instantFpsText: string;
   averageFps: number;
   averageFpsText: string;
+  averageFrameSpacing: number;
+  averageFrameSpacingText: string;
   meets60: boolean;
   statusText: string;
   windowSampleCount: number;
@@ -43,6 +39,14 @@ type FrameStats = {
   windowP99Duration: number;
   windowP99DurationText: string;
   recentDurationsText: string;
+  lastFrameSpacing: number;
+  lastFrameSpacingText: string;
+  lastDataDuration: number;
+  lastDataDurationText: string;
+  lastSignalDuration: number;
+  lastSignalDurationText: string;
+  lastStatsDuration: number;
+  lastStatsDurationText: string;
 };
 
 const formatMs = (value: number): string => value.toFixed(2);
@@ -53,9 +57,10 @@ const now = (): number =>
     ? performance.now()
     : Date.now();
 
-const initialFrameStats: FrameStats = {
+const createInitialStats = (): FrameStats => ({
   sampleCount: 0,
   totalDuration: 0,
+  totalFrameSpacing: 0,
   lastDuration: 0,
   lastDurationText: formatMs(0),
   averageDuration: 0,
@@ -64,6 +69,8 @@ const initialFrameStats: FrameStats = {
   instantFpsText: formatFps(0),
   averageFps: 0,
   averageFpsText: formatFps(0),
+  averageFrameSpacing: 0,
+  averageFrameSpacingText: formatMs(0),
   meets60: false,
   statusText: 'Measuring...',
   windowSampleCount: 0,
@@ -75,7 +82,21 @@ const initialFrameStats: FrameStats = {
   windowP95DurationText: formatMs(0),
   windowP99Duration: 0,
   windowP99DurationText: formatMs(0),
-  recentDurationsText: ''
+  recentDurationsText: '',
+  lastFrameSpacing: 0,
+  lastFrameSpacingText: formatMs(0),
+  lastDataDuration: 0,
+  lastDataDurationText: formatMs(0),
+  lastSignalDuration: 0,
+  lastSignalDurationText: formatMs(0),
+  lastStatsDuration: 0,
+  lastStatsDurationText: formatMs(0)
+});
+
+type FrameMeasurement = {
+  frameSpacing: number;
+  dataDuration: number;
+  signalDuration: number;
 };
 
 @Component({
@@ -87,11 +108,14 @@ const initialFrameStats: FrameStats = {
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AppComponent implements OnInit, OnDestroy {
-  rows: TickerRow[];
-  summary: TickerSummary;
-  frameDiagnostics: FrameStats = { ...initialFrameStats };
+  private frameStatsRef = createInitialStats();
 
-  private readonly frameStats: FrameStats = { ...initialFrameStats };
+  private readonly initialSnapshot = nextTickerSlice(ROW_COUNT);
+  readonly rows = signal<TickerRow[]>([...this.initialSnapshot.rows]);
+  readonly summary = signal<TickerSummary>({ ...this.initialSnapshot.summary });
+  readonly frameStats = signal<FrameStats>({ ...this.frameStatsRef });
+  readonly frameStatsView = computed(() => this.frameStats());
+  readonly loopRunning = signal(true);
 
   private frameId?: number;
   private lastFrameTime = now();
@@ -101,90 +125,133 @@ export class AppComponent implements OnInit, OnDestroy {
   private historyLength = 0;
   private readonly sortScratch: number[] = new Array(HISTORY_CAPACITY);
 
-  constructor(private readonly zone: NgZone, private readonly cdr: ChangeDetectorRef) {
-    const snapshot = nextTickerSlice(ROW_COUNT);
-    this.rows = snapshot.rows;
-    this.summary = snapshot.summary;
-    this.frameDiagnostics = this.frameStats;
-  }
-
   ngOnInit(): void {
-    this.zone.runOutsideAngular(() => {
-      this.lastFrameTime = now();
-      this.scheduleNextFrame();
-    });
+    this.scheduleNextFrame();
   }
 
   ngOnDestroy(): void {
+    this.stopLoop();
+  }
+
+  startLoop(): void {
+    if (this.loopRunning()) {
+      return;
+    }
+    this.loopRunning.set(true);
+    this.lastFrameTime = now();
+    this.scheduleNextFrame();
+  }
+
+  stopLoop(): void {
+    if (!this.loopRunning()) {
+      return;
+    }
+    this.loopRunning.set(false);
     if (this.frameId !== undefined) {
-      window.cancelAnimationFrame(this.frameId);
+      cancelAnimationFrame(this.frameId);
+      this.frameId = undefined;
     }
   }
 
   refreshOnce(): void {
-    const fresh = nextTickerSlice(ROW_COUNT);
-    this.rows = fresh.rows;
-    this.summary = fresh.summary;
-    this.resetFrameStats();
-    this.lastFrameTime = now();
+    const rowsRef = this.rows();
+    const summaryRef = this.summary();
 
-    this.zone.run(() => {
-      this.cdr.detectChanges();
-    });
+    const dataStart = performance.now();
+    nextTickerSlice(ROW_COUNT, rowsRef, summaryRef);
+    const dataDuration = performance.now() - dataStart;
+
+    const signalStart = performance.now();
+    this.rows.set([...rowsRef]);
+    this.summary.set({ ...summaryRef });
+    const signalDuration = performance.now() - signalStart;
+
+    this.updateFrameStats({ frameSpacing: 0, dataDuration, signalDuration });
   }
 
   trackBySymbol = (_: number, row: TickerRow) => row.symbol;
 
   private scheduleNextFrame(): void {
-    this.frameId = window.requestAnimationFrame((timestamp) => this.onAnimationFrame(timestamp));
+    if (!this.loopRunning()) {
+      this.frameId = undefined;
+      return;
+    }
+
+    this.frameId = requestAnimationFrame((timestamp) => this.onAnimationFrame(timestamp));
   }
 
   private onAnimationFrame(timestamp: number): void {
-    const delta = timestamp - this.lastFrameTime;
+    this.frameId = undefined;
+    const frameSpacing = timestamp - this.lastFrameTime;
     this.lastFrameTime = timestamp;
 
-    nextTickerSlice(ROW_COUNT, this.rows, this.summary);
+    const rowsRef = this.rows();
+    const summaryRef = this.summary();
 
-    const safeDelta = delta > 0 ? delta : 0;
-    this.updateFrameStats(safeDelta);
+    const dataStart = performance.now();
+    nextTickerSlice(ROW_COUNT, rowsRef, summaryRef);
+    const dataDuration = performance.now() - dataStart;
 
-    this.zone.run(() => {
-      this.cdr.detectChanges();
+    const signalStart = performance.now();
+    this.rows.set([...rowsRef]);
+    this.summary.set({ ...summaryRef });
+    const signalDuration = performance.now() - signalStart;
+
+    this.updateFrameStats({
+      frameSpacing: frameSpacing > 0 ? frameSpacing : 0,
+      dataDuration,
+      signalDuration
     });
 
     this.scheduleNextFrame();
   }
 
-  private updateFrameStats(delta: number): void {
-    const stats = this.frameStats;
+  private updateFrameStats(measurement: FrameMeasurement): void {
+    const stats = this.frameStatsRef;
+    const statsWorkStart = performance.now();
 
     stats.sampleCount += 1;
-    stats.totalDuration += delta;
-    stats.lastDuration = delta;
-    stats.lastDurationText = formatMs(delta);
-    stats.instantFps = delta > 0 ? 1000 / delta : stats.instantFps;
-    stats.instantFpsText = formatFps(stats.instantFps);
+    stats.lastDataDuration = measurement.dataDuration;
+    stats.lastDataDurationText = formatMs(measurement.dataDuration);
+    stats.lastSignalDuration = measurement.signalDuration;
+    stats.lastSignalDurationText = formatMs(measurement.signalDuration);
 
+    stats.lastFrameSpacing = measurement.frameSpacing;
+    stats.lastFrameSpacingText = formatMs(measurement.frameSpacing);
+    stats.totalFrameSpacing += measurement.frameSpacing;
+
+    const avgSpacing = stats.totalFrameSpacing / stats.sampleCount;
+    stats.averageFrameSpacing = avgSpacing;
+    stats.averageFrameSpacingText = formatMs(avgSpacing || 0);
+    stats.instantFps = measurement.frameSpacing > 0 ? 1000 / measurement.frameSpacing : stats.instantFps;
+    stats.instantFpsText = formatFps(stats.instantFps);
+    stats.averageFps = avgSpacing > 0 ? 1000 / avgSpacing : stats.averageFps;
+    stats.averageFpsText = formatFps(stats.averageFps);
+
+    const statsDuration = performance.now() - statsWorkStart;
+    stats.lastStatsDuration = statsDuration;
+    stats.lastStatsDurationText = formatMs(statsDuration);
+
+    const totalCost = measurement.dataDuration + measurement.signalDuration + statsDuration;
+
+    stats.totalDuration += totalCost;
+    stats.lastDuration = totalCost;
+    stats.lastDurationText = formatMs(totalCost);
     stats.averageDuration = stats.totalDuration / stats.sampleCount;
     stats.averageDurationText = formatMs(stats.averageDuration || 0);
-    stats.averageFps = stats.averageDuration > 0 ? 1000 / stats.averageDuration : stats.averageFps;
-    stats.averageFpsText = formatFps(stats.averageFps);
 
     const meetsBudget =
       stats.sampleCount >= MIN_SAMPLES_FOR_ASSESSMENT &&
       stats.averageDuration <= FRAME_TARGET_MS;
-
     stats.meets60 = meetsBudget;
-    stats.statusText =
-      stats.sampleCount < MIN_SAMPLES_FOR_ASSESSMENT ? 'Measuring...' : meetsBudget ? 'Yes' : 'No';
+    stats.statusText = stats.sampleCount < MIN_SAMPLES_FOR_ASSESSMENT ? 'Measuring...' : meetsBudget ? 'Yes' : 'No';
 
-    this.updateHistory(delta, stats);
-
-    this.frameDiagnostics = stats;
+    this.updateHistory(totalCost, stats);
+    this.frameStats.set({ ...stats });
   }
 
-  private updateHistory(delta: number, stats: FrameStats): void {
-    this.frameHistory[this.historyWriteIndex] = delta;
+  private updateHistory(cost: number, stats: FrameStats): void {
+    this.frameHistory[this.historyWriteIndex] = cost;
     this.historyWriteIndex = (this.historyWriteIndex + 1) % HISTORY_CAPACITY;
     if (this.historyLength < HISTORY_CAPACITY) {
       this.historyLength += 1;
@@ -223,6 +290,14 @@ export class AppComponent implements OnInit, OnDestroy {
     const p95Value = scratch[p95Index];
     const p99Value = scratch[p99Index];
 
+    const recentCount = Math.min(RECENT_HISTORY_SIZE, windowSize);
+    let historyText = '';
+    for (let i = 0; i < recentCount; i += 1) {
+      const historyIndex = (this.historyWriteIndex - recentCount + i + HISTORY_CAPACITY) % HISTORY_CAPACITY;
+      const formatted = formatMs(this.frameHistory[historyIndex]);
+      historyText += i === 0 ? formatted : `, ${formatted}`;
+    }
+
     stats.windowMinDuration = minValue;
     stats.windowMinDurationText = formatMs(minValue);
     stats.windowMaxDuration = maxValue;
@@ -231,47 +306,16 @@ export class AppComponent implements OnInit, OnDestroy {
     stats.windowP95DurationText = formatMs(p95Value);
     stats.windowP99Duration = p99Value;
     stats.windowP99DurationText = formatMs(p99Value);
-
-    const recentCount = Math.min(RECENT_HISTORY_SIZE, windowSize);
-    let historyText = '';
-    for (let i = 0; i < recentCount; i += 1) {
-      const historyIndex = (this.historyWriteIndex - recentCount + i + HISTORY_CAPACITY) % HISTORY_CAPACITY;
-      const formatted = formatMs(this.frameHistory[historyIndex]);
-      historyText += i === 0 ? formatted : `, ${formatted}`;
-    }
     stats.recentDurationsText = historyText;
 
     scratch.length = HISTORY_CAPACITY;
   }
 
   private resetFrameStats(): void {
-    const stats = this.frameStats;
-    stats.sampleCount = 0;
-    stats.totalDuration = 0;
-    stats.lastDuration = 0;
-    stats.lastDurationText = formatMs(0);
-    stats.averageDuration = 0;
-    stats.averageDurationText = formatMs(0);
-    stats.instantFps = 0;
-    stats.instantFpsText = formatFps(0);
-    stats.averageFps = 0;
-    stats.averageFpsText = formatFps(0);
-    stats.meets60 = false;
-    stats.statusText = 'Measuring...';
-    stats.windowSampleCount = 0;
-    stats.windowMinDuration = 0;
-    stats.windowMinDurationText = formatMs(0);
-    stats.windowMaxDuration = 0;
-    stats.windowMaxDurationText = formatMs(0);
-    stats.windowP95Duration = 0;
-    stats.windowP95DurationText = formatMs(0);
-    stats.windowP99Duration = 0;
-    stats.windowP99DurationText = formatMs(0);
-    stats.recentDurationsText = '';
-
+    this.frameStatsRef = createInitialStats();
+    this.frameStats.set({ ...this.frameStatsRef });
+    this.frameHistory.fill(0);
     this.historyWriteIndex = 0;
     this.historyLength = 0;
-
-    this.frameDiagnostics = stats;
   }
 }

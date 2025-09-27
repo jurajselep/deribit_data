@@ -27,9 +27,7 @@
             "outputPath": "dist/angular-fin-dashboard",
             "index": "src/index.html",
             "main": "src/main.ts",
-            "polyfills": [
-              "zone.js"
-            ],
+            "polyfills": [],
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
             "assets": [
@@ -72,10 +70,10 @@
           "builder": "@angular-devkit/build-angular:dev-server",
           "configurations": {
             "production": {
-              "browserTarget": "angular-fin-dashboard:build:production"
+              "buildTarget": "angular-fin-dashboard:build:production"
             },
             "development": {
-              "browserTarget": "angular-fin-dashboard:build:development"
+              "buildTarget": "angular-fin-dashboard:build:development"
             }
           },
           "defaultConfiguration": "development"
@@ -83,16 +81,13 @@
         "extract-i18n": {
           "builder": "@angular-devkit/build-angular:extract-i18n",
           "options": {
-            "browserTarget": "angular-fin-dashboard:build"
+            "buildTarget": "angular-fin-dashboard:build"
           }
         },
         "test": {
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
-            "polyfills": [
-              "zone.js",
-              "zone.js/testing"
-            ],
+            "polyfills": [],
             "tsConfig": "tsconfig.spec.json",
             "inlineStyleLanguage": "scss",
             "assets": [
