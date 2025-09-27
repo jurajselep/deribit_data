@@ -1,20 +1,78 @@
 <main class="app">
   <header class="app__header">
-    <div>
-      <h1>Random Market Feed (Angular)</h1>
-      <p class="app__meta">
-        {{ rows().length }} symbols | {{ summary().gainers }} up / {{ summary().losers }} down | Avg move
-        {{ summary().averageMoveText }}
-      </p>
-      <div class="app__metrics">
-        <span class="app__metric"><span class="app__metric-label">Window:</span> {{ frameStatsView().windowSampleCount }}</span>
-        <span class="app__metric"><span class="app__metric-label">Min:</span> {{ frameStatsView().windowMinDurationText }} ms</span>
-        <span class="app__metric"><span class="app__metric-label">Max:</span> {{ frameStatsView().windowMaxDurationText }} ms</span>
-        <span class="app__metric"><span class="app__metric-label">P95:</span> {{ frameStatsView().windowP95DurationText }} ms</span>
-        <span class="app__metric"><span class="app__metric-label">P99:</span> {{ frameStatsView().windowP99DurationText }} ms</span>
+    <div class="app__header-left">
+      <h1>Digital Options Chain</h1>
+
+      <ng-container *ngIf="selectedChain() as chain; else placeholderMeta">
+        <p class="app__meta">
+          Underlying {{ chain.summary.underlyingText }} · ATM IV {{ chain.summary.atmIVText }} · Skew
+          {{ chain.summary.skewText }}
+        </p>
+
+        <div class="app__smile" role="img" aria-label="volatility smile chart">
+          <svg viewBox="0 0 600 160" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="smileGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="rgba(118, 220, 178, 0.85)" />
+                <stop offset="100%" stop-color="rgba(130, 163, 242, 0.85)" />
+              </linearGradient>
+            </defs>
+            <polyline
+              [attr.points]="smilePath()"
+              fill="none"
+              stroke="url(#smileGradient)"
+              stroke-width="2.5"
+              stroke-linecap="round"
+            ></polyline>
+            <g *ngFor="let point of smilePoints()">
+              <circle [attr.cx]="point.x" [attr.cy]="point.y" r="3" fill="rgba(236, 240, 255, 0.85)"></circle>
+            </g>
+          </svg>
+          <div class="app__smile-axis">
+            <span>{{ smileAxis().minStrike }}</span>
+            <span>Strike</span>
+            <span>{{ smileAxis().maxStrike }}</span>
+          </div>
+        </div>
+
+        <div class="app__summary-grid">
+          <div class="app__summary-card">
+            <span class="app__summary-label">Call Volume</span>
+            <span class="app__summary-value">{{ chain.summary.callVolumeText }}</span>
+          </div>
+          <div class="app__summary-card">
+            <span class="app__summary-label">Put Volume</span>
+            <span class="app__summary-value">{{ chain.summary.putVolumeText }}</span>
+          </div>
+          <div class="app__summary-card">
+            <span class="app__summary-label">Call OI</span>
+            <span class="app__summary-value">{{ chain.summary.callOpenInterestText }}</span>
+          </div>
+          <div class="app__summary-card">
+            <span class="app__summary-label">Put OI</span>
+            <span class="app__summary-value">{{ chain.summary.putOpenInterestText }}</span>
+          </div>
+        </div>
+      </ng-container>
+      <ng-template #placeholderMeta>
+        <p class="app__meta app__meta--empty">Awaiting market data…</p>
+      </ng-template>
+
+      <div class="app__maturities" role="tablist">
+        <button
+          *ngFor="let maturity of maturities()"
+          type="button"
+          role="tab"
+          class="app__maturity"
+          [class.app__maturity--active]="maturity.id === selectedMaturity()"
+          (click)="selectMaturity(maturity.id)"
+        >
+          {{ maturity.label }}
+        </button>
       </div>
+
       <div class="app__history">
-        <span class="app__metric-label">Recent updates (ms):</span>
+        <span class="app__metric-label">Recent updates (ms)</span>
         <span class="app__history-values">
           {{ frameStatsView().recentDurationsText || 'n/a' }}
         </span>
@@ -22,62 +80,76 @@
     </div>
 
     <div class="app__actions">
-      <span class="app__timestamp">Last tick: {{ summary().lastUpdatedText }}</span>
-      <span class="app__fps">
-        Frame spacing (last):
-        {{ frameStatsView().lastFrameSpacingText }} ms |
-        {{ frameStatsView().instantFpsText }} fps
+      <span class="app__timestamp">
+        Last update:
+        <ng-container *ngIf="selectedChain() as chain; else dash">{{ chain.summary.lastUpdatedText }}</ng-container>
+        <ng-template #dash>--:--:--</ng-template>
       </span>
       <span class="app__fps">
-        Update (last):
-        {{ frameStatsView().lastDurationText }} ms |
-        data {{ frameStatsView().lastDataDurationText }} ms |
-        signals {{ frameStatsView().lastSignalDurationText }} ms |
-        stats {{ frameStatsView().lastStatsDurationText }} ms
+        Frame spacing: {{ frameStatsView().lastFrameSpacingText }} ms · {{ frameStatsView().instantFpsText }} fps
+      </span>
+      <span class="app__fps">
+        Perf: {{ frameStatsView().lastDurationText }} ms total · smile {{ frameStatsView().lastSmileDurationText }} ms · data
+        {{ frameStatsView().lastDataDurationText }} ms · signals {{ frameStatsView().lastSignalDurationText }} ms · stats
+        {{ frameStatsView().lastStatsDurationText }} ms
       </span>
       <span
         class="app__fps"
         [class.app__fps--good]="frameStatsView().meets60"
         [class.app__fps--cold]="!frameStatsView().meets60 && frameStatsView().sampleCount >= 10"
       >
-        Update (avg):
-        {{ frameStatsView().averageDurationText }} ms |
-        60 fps ready?
+        Avg update {{ frameStatsView().averageDurationText }} ms · 60 fps ready?
         <strong>{{ frameStatsView().statusText }}</strong>
       </span>
       <div class="app__buttons">
         <button type="button" (click)="startLoop()" [disabled]="loopRunning()">Start loop</button>
         <button type="button" class="button--stop" (click)="stopLoop()" [disabled]="!loopRunning()">Stop loop</button>
-        <button type="button" (click)="refreshOnce()">Reshuffle</button>
+        <button type="button" (click)="refreshOnce()">Refresh snapshot</button>
       </div>
     </div>
   </header>
 
   <section class="app__table">
-    <table>
-      <thead>
-        <tr>
-          <th>Symbol</th>
-          <th>Price</th>
-          <th>Change</th>
-          <th>%</th>
-          <th>Volume</th>
-          <th>Market Cap</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          *ngFor="let row of rows(); trackBy: trackBySymbol"
-          [ngClass]="{ up: row.change > 0, down: row.change < 0 }"
-        >
-          <td>{{ row.symbol }}</td>
-          <td>{{ row.priceText }}</td>
-          <td>{{ row.changeText }}</td>
-          <td>{{ row.changePctText }}</td>
-          <td>{{ row.volumeText }}</td>
-          <td>{{ row.marketCapText }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <ng-container *ngIf="selectedChain() as chain; else emptyTable">
+      <table>
+        <thead>
+          <tr class="app__table-group">
+            <th colspan="4">Calls</th>
+            <th class="app__table-divider">Strike</th>
+            <th colspan="4">Puts</th>
+          </tr>
+          <tr>
+            <th>Bid</th>
+            <th>Ask</th>
+            <th>IV</th>
+            <th>Δ</th>
+            <th>Strike</th>
+            <th>Δ</th>
+            <th>IV</th>
+            <th>Bid</th>
+            <th>Ask</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            *ngFor="let row of chain.rows; trackBy: trackByStrike"
+            [ngClass]="{ up: row.call.change >= 0, down: row.call.change < 0 }"
+          >
+            <td>{{ row.call.bidText }}</td>
+            <td>{{ row.call.askText }}</td>
+            <td>{{ row.call.ivText }}</td>
+            <td>{{ row.call.deltaText }}</td>
+            <td class="app__strike">{{ row.strikeText }}</td>
+            <td>{{ row.put.deltaText }}</td>
+            <td>{{ row.put.ivText }}</td>
+            <td>{{ row.put.bidText }}</td>
+            <td>{{ row.put.askText }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </ng-container>
+    <ng-template #emptyTable>
+      <div class="app__empty">No option data available.</div>
+    </ng-template>
   </section>
 </main>

@@ -1,33 +1,36 @@
 import { createReducer, on } from '@ngrx/store';
-import { dashboardFrameUpdate } from './dashboard.actions';
+import { dashboardFrameUpdate, dashboardSelectMaturity } from './dashboard.actions';
 import { createInitialStats, FrameStats } from '../models/frame-stats';
-import { nextTickerSlice, type TickerRow, type TickerSummary } from '../data/generate-tickers';
-import { ROW_COUNT } from '../constants';
+import { cloneChains, createOptionDataBuffers, type MaturityInfo, type OptionChain } from '../data/options-chain';
 
 export interface DashboardState {
-  rows: TickerRow[];
-  summary: TickerSummary;
+  maturities: MaturityInfo[];
+  selectedMaturity: string;
+  chains: Record<string, OptionChain>;
   stats: FrameStats;
 }
 
 export const DASHBOARD_FEATURE_KEY = 'dashboard' as const;
 
-const initialSnapshot = nextTickerSlice(ROW_COUNT);
-
-const cloneRows = (rows: TickerRow[]): TickerRow[] =>
-  rows.map((row) => ({ ...row }));
-
-const cloneSummary = (summary: TickerSummary): TickerSummary => ({ ...summary });
-
-const initialStats = createInitialStats();
+const optionBuffers = createOptionDataBuffers();
 
 export const initialDashboardState: DashboardState = {
-  rows: cloneRows(initialSnapshot.rows),
-  summary: cloneSummary(initialSnapshot.summary),
-  stats: { ...initialStats }
+  maturities: optionBuffers.maturities,
+  selectedMaturity: optionBuffers.maturities[0]?.id ?? '',
+  chains: cloneChains(optionBuffers.chains),
+  stats: createInitialStats()
 };
 
 export const dashboardReducer = createReducer(
   initialDashboardState,
-  on(dashboardFrameUpdate, (_, { rows, summary, stats }) => ({ rows, summary, stats }))
+  on(dashboardFrameUpdate, (state, { chains, stats }) => ({
+    ...state,
+    chains,
+    stats
+  })),
+  on(dashboardSelectMaturity, (state, { maturity }) => (
+    state.maturities.some((item) => item.id === maturity)
+      ? { ...state, selectedMaturity: maturity }
+      : state
+  ))
 );

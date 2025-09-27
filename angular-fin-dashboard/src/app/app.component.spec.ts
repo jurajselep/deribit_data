@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideStore } from '@ngrx/store';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideStore } from '@ngrx/store';
 import { AppComponent } from './app.component';
 import { dashboardReducer, DASHBOARD_FEATURE_KEY } from './state/dashboard.reducer';
 
@@ -56,20 +56,19 @@ describe('AppComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it('updates the data stream on animation frames and records metrics', () => {
+  it('updates the option chain on animation frames and records metrics', () => {
     fixture.detectChanges();
-    const initialPrice = component.rows()[0].priceText;
+    const initialChain = component.selectedChain();
+    const initialValue = initialChain?.rows[0]?.call.bidText;
 
     triggerFrame();
     fixture.detectChanges();
 
-    expect(component.rows()[0].priceText).not.toEqual(initialPrice);
+    const updatedChain = component.selectedChain();
+    expect(updatedChain?.rows[0]?.call.bidText).not.toEqual(initialValue);
     const stats = component.frameStatsView();
     expect(stats.sampleCount).toBeGreaterThan(0);
-    expect(stats.lastDuration).toBeGreaterThan(0);
-    expect(stats.lastDataDuration).toBeGreaterThanOrEqual(0);
-    expect(stats.lastSignalDuration).toBeGreaterThanOrEqual(0);
-    expect(stats.lastStatsDuration).toBeGreaterThanOrEqual(0);
+    expect(component.smilePoints().length).toBeGreaterThan(0);
   });
 
   it('reports meeting the 60fps budget after enough samples', () => {

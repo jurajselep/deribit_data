@@ -1,17 +1,17 @@
 # Angular Fin Dashboard
 
-Synthetic market dashboard pushing frame-by-frame updates with Angular 20 signals and zoneless change detection. Designed to stay smooth on slower CPUs while surfacing detailed performance telemetry.
+Deribit-inspired crypto options chain rendered every animation frame with Angular 20 signals and zoneless change detection. Designed to stay smooth on slower CPUs while surfacing detailed performance telemetry.
 
 ## Performance Optimizations
 
-- **Zoneless signal graph**: the app bootstraps with `provideZonelessChangeDetection()` so Angular runs without Zone.js. Every state holder is a `signal`, which keeps template bindings reactive without relying on macro-task patches.
-- **RAF-driven stream loop**: ticker generation runs inside a single `requestAnimationFrame` callback, guaranteeing work is batch-aligned with the browser render pipeline.
-- **In-place data reuse**: `nextTickerSlice` mutates a stable pool of `TickerRow` objects, and the writable signals re-emit the same references each tick (using `equal: () => false`). That keeps garbage creation near-zero and still wakes the view layer.
-- **Preformatted payloads**: price/percentage/volume strings are computed alongside the numeric values, removing the need for expensive pipes during change detection.
-- **Frame analytics buffer**: a 180-frame ring buffer tracks min/max, p95/p99, and the latest dozen frame times so bottlenecks are visible straight from the UI.
-- **Redux signal store**: a streamlined NgRx store (`provideStore`) receives every frame snapshot while the component keeps blazing-fast local signals; a single action fan-outs rows, summary, and perf stats for observers without touching Zone.js.
-- **Headless-friendly testing**: Karma is wired to Puppeteer’s `ChromeHeadless` launcher (with `--no-sandbox` flags) so tests run in CI or containerized environments.
+- **Zoneless signal graph**: the app bootstraps with `provideZonelessChangeDetection()` so Angular runs without Zone.js. Every state holder is a signal, keeping bindings reactive without macro-task patches.
+- **Deribit-style option chain**: maturities, strikes, greeks, and volume/OI summaries update every frame with a synthetic BTC surface; expiries can be swapped instantly via the minimal header selector.
+- **RAF-driven loop**: option generation runs inside a single `requestAnimationFrame`, keeping work aligned with the browser’s paint cycle.
+- **In-place data reuse**: mutable option books stay resident in memory while writable signals and NgRx actions fan out cloned snapshots (using `equal: () => false`) to avoid garbage and still wake the view layer.
+- **Frame analytics buffer**: a 180-frame ring buffer tracks min/max, p95/p99, and the latest dozen frame costs so bottlenecks are visible straight from the UI.
+- **Redux signal store**: a streamlined NgRx store (`provideStore`) receives every frame snapshot without Zone.js, ready for logging/devtools while the component remains signal-fast.
 - **Benchmark harness**: `npm run benchmark` executes a Node.js microbenchmark (5 000 iterations) to validate update cost against the 16.67 ms frame budget.
+- **Headless-friendly testing**: Karma is wired to Puppeteer’s ChromeHeadless (with `--no-sandbox`) so unit tests run in CI or containerized environments.
 
 ## Commands
 
@@ -31,7 +31,7 @@ npm install
 npm start
 ```
 
-Open the local server to watch the feed update every frame and inspect the live frame diagnostics panel.
+Open the local server to watch the option chain update each frame and inspect the live performance telemetry panel.
 
 ## Further Help
 

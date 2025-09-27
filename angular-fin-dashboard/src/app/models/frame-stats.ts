@@ -1,9 +1,12 @@
 export interface FrameStats {
   sampleCount: number;
   totalDuration: number;
+  totalSmileDuration: number;
   totalFrameSpacing: number;
   lastDuration: number;
   lastDurationText: string;
+  lastSmileDuration: number;
+  lastSmileDurationText: string;
   averageDuration: number;
   averageDurationText: string;
   instantFps: number;
@@ -40,9 +43,12 @@ const formatFps = (value: number): string => (Number.isFinite(value) ? value.toF
 export const createInitialStats = (): FrameStats => ({
   sampleCount: 0,
   totalDuration: 0,
+  totalSmileDuration: 0,
   totalFrameSpacing: 0,
   lastDuration: 0,
   lastDurationText: formatMs(0),
+  lastSmileDuration: 0,
+  lastSmileDurationText: formatMs(0),
   averageDuration: 0,
   averageDurationText: formatMs(0),
   instantFps: 0,
