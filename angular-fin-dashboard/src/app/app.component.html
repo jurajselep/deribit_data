@@ -1,0 +1,73 @@
+<main class="app">
+  <header class="app__header">
+    <div>
+      <h1>Random Market Feed (Angular)</h1>
+      <p class="app__meta">
+        {{ rows.length }} symbols | {{ summary.gainers }} up / {{ summary.losers }} down | Avg move
+        {{ summary.averageMoveText }}
+      </p>
+      <div class="app__metrics">
+        <span class="app__metric"><span class="app__metric-label">Window:</span> {{ frameDiagnostics.windowSampleCount }}</span>
+        <span class="app__metric"><span class="app__metric-label">Min:</span> {{ frameDiagnostics.windowMinDurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">Max:</span> {{ frameDiagnostics.windowMaxDurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">P95:</span> {{ frameDiagnostics.windowP95DurationText }} ms</span>
+        <span class="app__metric"><span class="app__metric-label">P99:</span> {{ frameDiagnostics.windowP99DurationText }} ms</span>
+      </div>
+      <div class="app__history">
+        <span class="app__metric-label">Recent frames (ms):</span>
+        <span class="app__history-values">
+          {{ frameDiagnostics.recentDurationsText || 'n/a' }}
+        </span>
+      </div>
+    </div>
+
+    <div class="app__actions">
+      <span class="app__timestamp">Last tick: {{ summary.lastUpdatedText }}</span>
+      <span class="app__fps">
+        Frame (last):
+        {{ frameDiagnostics.lastDurationText }} ms |
+        {{ frameDiagnostics.instantFpsText }} fps
+      </span>
+      <span
+        class="app__fps"
+        [class.app__fps--good]="frameDiagnostics.meets60"
+        [class.app__fps--cold]="!frameDiagnostics.meets60 && frameDiagnostics.sampleCount >= 10"
+      >
+        Frame (avg):
+        {{ frameDiagnostics.averageDurationText }} ms |
+        {{ frameDiagnostics.averageFpsText }} fps |
+        60 fps ready?
+        <strong>{{ frameDiagnostics.statusText }}</strong>
+      </span>
+      <button type="button" (click)="refreshOnce()">Reshuffle</button>
+    </div>
+  </header>
+
+  <section class="app__table">
+    <table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Price</th>
+          <th>Change</th>
+          <th>%</th>
+          <th>Volume</th>
+          <th>Market Cap</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          *ngFor="let row of rows; trackBy: trackBySymbol"
+          [ngClass]="{ up: row.change > 0, down: row.change < 0 }"
+        >
+          <td>{{ row.symbol }}</td>
+          <td>{{ row.priceText }}</td>
+          <td>{{ row.changeText }}</td>
+          <td>{{ row.changePctText }}</td>
+          <td>{{ row.volumeText }}</td>
+          <td>{{ row.marketCapText }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
