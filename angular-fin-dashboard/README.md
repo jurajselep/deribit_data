@@ -9,6 +9,7 @@ Synthetic market dashboard pushing frame-by-frame updates with Angular 20 signal
 - **In-place data reuse**: `nextTickerSlice` mutates a stable pool of `TickerRow` objects, and the writable signals re-emit the same references each tick (using `equal: () => false`). That keeps garbage creation near-zero and still wakes the view layer.
 - **Preformatted payloads**: price/percentage/volume strings are computed alongside the numeric values, removing the need for expensive pipes during change detection.
 - **Frame analytics buffer**: a 180-frame ring buffer tracks min/max, p95/p99, and the latest dozen frame times so bottlenecks are visible straight from the UI.
+- **Redux signal store**: a streamlined NgRx store (`provideStore`) receives every frame snapshot while the component keeps blazing-fast local signals; a single action fan-outs rows, summary, and perf stats for observers without touching Zone.js.
 - **Headless-friendly testing**: Karma is wired to Puppeteer’s `ChromeHeadless` launcher (with `--no-sandbox` flags) so tests run in CI or containerized environments.
 - **Benchmark harness**: `npm run benchmark` executes a Node.js microbenchmark (5 000 iterations) to validate update cost against the 16.67 ms frame budget.
 

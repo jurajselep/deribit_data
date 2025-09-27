@@ -1,5 +1,10 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, signal } from '@angular/core';
 import { NgClass, NgFor } from '@angular/common';
+import { Store } from '@ngrx/store';
+import { dashboardFrameUpdate } from './state/dashboard.actions';
+import { DASHBOARD_FEATURE_KEY, DashboardState, initialDashboardState } from './state/dashboard.reducer';
+import { createInitialStats, FrameStats, formatDuration, formatFrequency } from './models/frame-stats';
+import { HISTORY_CAPACITY, RECENT_HISTORY_SIZE, ROW_COUNT } from './constants';
 import {
   defaultFrameDuration,
   nextTickerSlice,
@@ -7,97 +12,20 @@ import {
   type TickerSummary
 } from './data/generate-tickers';
 
-const ROW_COUNT = 20;
 const FRAME_TARGET_MS = defaultFrameDuration;
 const MIN_SAMPLES_FOR_ASSESSMENT = 90;
-const HISTORY_CAPACITY = 180;
-const RECENT_HISTORY_SIZE = 12;
 
-type FrameStats = {
-  sampleCount: number;
-  totalDuration: number;
-  totalFrameSpacing: number;
-  lastDuration: number;
-  lastDurationText: string;
-  averageDuration: number;
-  averageDurationText: string;
-  instantFps: number;
-  instantFpsText: string;
-  averageFps: number;
-  averageFpsText: string;
-  averageFrameSpacing: number;
-  averageFrameSpacingText: string;
-  meets60: boolean;
-  statusText: string;
-  windowSampleCount: number;
-  windowMinDuration: number;
-  windowMinDurationText: string;
-  windowMaxDuration: number;
-  windowMaxDurationText: string;
-  windowP95Duration: number;
-  windowP95DurationText: string;
-  windowP99Duration: number;
-  windowP99DurationText: string;
-  recentDurationsText: string;
-  lastFrameSpacing: number;
-  lastFrameSpacingText: string;
-  lastDataDuration: number;
-  lastDataDurationText: string;
-  lastSignalDuration: number;
-  lastSignalDurationText: string;
-  lastStatsDuration: number;
-  lastStatsDurationText: string;
+type FrameMeasurement = {
+  frameSpacing: number;
+  dataDuration: number;
 };
 
-const formatMs = (value: number): string => value.toFixed(2);
-const formatFps = (value: number): string => (Number.isFinite(value) ? value.toFixed(0) : '0');
+type AppState = { [DASHBOARD_FEATURE_KEY]: DashboardState };
 
 const now = (): number =>
   typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
     : Date.now();
-
-const createInitialStats = (): FrameStats => ({
-  sampleCount: 0,
-  totalDuration: 0,
-  totalFrameSpacing: 0,
-  lastDuration: 0,
-  lastDurationText: formatMs(0),
-  averageDuration: 0,
-  averageDurationText: formatMs(0),
-  instantFps: 0,
-  instantFpsText: formatFps(0),
-  averageFps: 0,
-  averageFpsText: formatFps(0),
-  averageFrameSpacing: 0,
-  averageFrameSpacingText: formatMs(0),
-  meets60: false,
-  statusText: 'Measuring...',
-  windowSampleCount: 0,
-  windowMinDuration: 0,
-  windowMinDurationText: formatMs(0),
-  windowMaxDuration: 0,
-  windowMaxDurationText: formatMs(0),
-  windowP95Duration: 0,
-  windowP95DurationText: formatMs(0),
-  windowP99Duration: 0,
-  windowP99DurationText: formatMs(0),
-  recentDurationsText: '',
-  lastFrameSpacing: 0,
-  lastFrameSpacingText: formatMs(0),
-  lastDataDuration: 0,
-  lastDataDurationText: formatMs(0),
-  lastSignalDuration: 0,
-  lastSignalDurationText: formatMs(0),
-  lastStatsDuration: 0,
-  lastStatsDurationText: formatMs(0)
-});
-
-type FrameMeasurement = {
-  frameSpacing: number;
-  dataDuration: number;
-  signalDuration: number;
-};
 
 @Component({
   selector: 'app-root',
@@ -108,11 +36,12 @@ type FrameMeasurement = {
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AppComponent implements OnInit, OnDestroy {
-  private frameStatsRef = createInitialStats();
+  private frameStatsRef: FrameStats = { ...initialDashboardState.stats };
+  private rowsBuffer: TickerRow[] = initialDashboardState.rows.map((row) => ({ ...row }));
+  private summaryBuffer: TickerSummary = { ...initialDashboardState.summary };
 
-  private readonly initialSnapshot = nextTickerSlice(ROW_COUNT);
-  readonly rows = signal<TickerRow[]>(this.initialSnapshot.rows, { equal: () => false });
-  readonly summary = signal<TickerSummary>(this.initialSnapshot.summary, { equal: () => false });
+  readonly rows = signal<TickerRow[]>(this.rowsBuffer, { equal: () => false });
+  readonly summary = signal<TickerSummary>(this.summaryBuffer, { equal: () => false });
   readonly frameStats = signal<FrameStats>(this.frameStatsRef, { equal: () => false });
   readonly frameStatsView = computed(() => this.frameStats());
   readonly loopRunning = signal(true);
@@ -125,7 +54,10 @@ export class AppComponent implements OnInit, OnDestroy {
   private historyLength = 0;
   private readonly sortScratch: number[] = new Array(HISTORY_CAPACITY);
 
+  constructor(private readonly store: Store<AppState>) {}
+
   ngOnInit(): void {
+    this.dispatchSnapshot();
     this.scheduleNextFrame();
   }
 
@@ -154,19 +86,11 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   refreshOnce(): void {
-    const rowsRef = this.rows();
-    const summaryRef = this.summary();
-
     const dataStart = performance.now();
-    nextTickerSlice(ROW_COUNT, rowsRef, summaryRef);
+    nextTickerSlice(ROW_COUNT, this.rowsBuffer, this.summaryBuffer);
     const dataDuration = performance.now() - dataStart;
 
-    const signalStart = performance.now();
-    this.rows.set(rowsRef);
-    this.summary.set(summaryRef);
-    const signalDuration = performance.now() - signalStart;
-
-    this.updateFrameStats({ frameSpacing: 0, dataDuration, signalDuration });
+    this.updateFrameStats({ frameSpacing: 0, dataDuration });
   }
 
   trackBySymbol = (_: number, row: TickerRow) => row.symbol;
@@ -185,22 +109,13 @@ export class AppComponent implements OnInit, OnDestroy {
     const frameSpacing = timestamp - this.lastFrameTime;
     this.lastFrameTime = timestamp;
 
-    const rowsRef = this.rows();
-    const summaryRef = this.summary();
-
     const dataStart = performance.now();
-    nextTickerSlice(ROW_COUNT, rowsRef, summaryRef);
+    nextTickerSlice(ROW_COUNT, this.rowsBuffer, this.summaryBuffer);
     const dataDuration = performance.now() - dataStart;
-
-    const signalStart = performance.now();
-    this.rows.set(rowsRef);
-    this.summary.set(summaryRef);
-    const signalDuration = performance.now() - signalStart;
 
     this.updateFrameStats({
       frameSpacing: frameSpacing > 0 ? frameSpacing : 0,
-      dataDuration,
-      signalDuration
+      dataDuration
     });
 
     this.scheduleNextFrame();
@@ -212,33 +127,41 @@ export class AppComponent implements OnInit, OnDestroy {
 
     stats.sampleCount += 1;
     stats.lastDataDuration = measurement.dataDuration;
-    stats.lastDataDurationText = formatMs(measurement.dataDuration);
-    stats.lastSignalDuration = measurement.signalDuration;
-    stats.lastSignalDurationText = formatMs(measurement.signalDuration);
+    stats.lastDataDurationText = formatDuration(measurement.dataDuration);
 
     stats.lastFrameSpacing = measurement.frameSpacing;
-    stats.lastFrameSpacingText = formatMs(measurement.frameSpacing);
+    stats.lastFrameSpacingText = formatDuration(measurement.frameSpacing);
     stats.totalFrameSpacing += measurement.frameSpacing;
 
     const avgSpacing = stats.totalFrameSpacing / stats.sampleCount;
     stats.averageFrameSpacing = avgSpacing;
-    stats.averageFrameSpacingText = formatMs(avgSpacing || 0);
+    stats.averageFrameSpacingText = formatDuration(avgSpacing || 0);
     stats.instantFps = measurement.frameSpacing > 0 ? 1000 / measurement.frameSpacing : stats.instantFps;
-    stats.instantFpsText = formatFps(stats.instantFps);
+    stats.instantFpsText = formatFrequency(stats.instantFps);
     stats.averageFps = avgSpacing > 0 ? 1000 / avgSpacing : stats.averageFps;
-    stats.averageFpsText = formatFps(stats.averageFps);
+    stats.averageFpsText = formatFrequency(stats.averageFps);
 
     const statsDuration = performance.now() - statsWorkStart;
     stats.lastStatsDuration = statsDuration;
-    stats.lastStatsDurationText = formatMs(statsDuration);
+    stats.lastStatsDurationText = formatDuration(statsDuration);
 
-    const totalCost = measurement.dataDuration + measurement.signalDuration + statsDuration;
+    const signalStart = performance.now();
+    this.rows.set(this.rowsBuffer);
+    this.summary.set(this.summaryBuffer);
+    const rowsForStore = this.cloneRowsForStore();
+    const summaryForStore = this.cloneSummaryForStore();
+    const signalDuration = performance.now() - signalStart;
+
+    stats.lastSignalDuration = signalDuration;
+    stats.lastSignalDurationText = formatDuration(signalDuration);
+
+    const totalCost = measurement.dataDuration + signalDuration + statsDuration;
 
     stats.totalDuration += totalCost;
     stats.lastDuration = totalCost;
-    stats.lastDurationText = formatMs(totalCost);
+    stats.lastDurationText = formatDuration(totalCost);
     stats.averageDuration = stats.totalDuration / stats.sampleCount;
-    stats.averageDurationText = formatMs(stats.averageDuration || 0);
+    stats.averageDurationText = formatDuration(stats.averageDuration || 0);
 
     const meetsBudget =
       stats.sampleCount >= MIN_SAMPLES_FOR_ASSESSMENT &&
@@ -247,7 +170,11 @@ export class AppComponent implements OnInit, OnDestroy {
     stats.statusText = stats.sampleCount < MIN_SAMPLES_FOR_ASSESSMENT ? 'Measuring...' : meetsBudget ? 'Yes' : 'No';
 
     this.updateHistory(totalCost, stats);
-    this.frameStats.set(stats);
+
+    this.frameStats.set(this.frameStatsRef);
+
+    const statsForStore = this.cloneStatsForStore();
+    this.store.dispatch(dashboardFrameUpdate({ rows: rowsForStore, summary: summaryForStore, stats: statsForStore }));
   }
 
   private updateHistory(cost: number, stats: FrameStats): void {
@@ -262,13 +189,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
     if (windowSize === 0) {
       stats.windowMinDuration = 0;
-      stats.windowMinDurationText = formatMs(0);
+      stats.windowMinDurationText = formatDuration(0);
       stats.windowMaxDuration = 0;
-      stats.windowMaxDurationText = formatMs(0);
+      stats.windowMaxDurationText = formatDuration(0);
       stats.windowP95Duration = 0;
-      stats.windowP95DurationText = formatMs(0);
+      stats.windowP95DurationText = formatDuration(0);
       stats.windowP99Duration = 0;
-      stats.windowP99DurationText = formatMs(0);
+      stats.windowP99DurationText = formatDuration(0);
       stats.recentDurationsText = '';
       return;
     }
@@ -294,18 +221,18 @@ export class AppComponent implements OnInit, OnDestroy {
     let historyText = '';
     for (let i = 0; i < recentCount; i += 1) {
       const historyIndex = (this.historyWriteIndex - recentCount + i + HISTORY_CAPACITY) % HISTORY_CAPACITY;
-      const formatted = formatMs(this.frameHistory[historyIndex]);
+      const formatted = formatDuration(this.frameHistory[historyIndex]);
       historyText += i === 0 ? formatted : `, ${formatted}`;
     }
 
     stats.windowMinDuration = minValue;
-    stats.windowMinDurationText = formatMs(minValue);
+    stats.windowMinDurationText = formatDuration(minValue);
     stats.windowMaxDuration = maxValue;
-    stats.windowMaxDurationText = formatMs(maxValue);
+    stats.windowMaxDurationText = formatDuration(maxValue);
     stats.windowP95Duration = p95Value;
-    stats.windowP95DurationText = formatMs(p95Value);
+    stats.windowP95DurationText = formatDuration(p95Value);
     stats.windowP99Duration = p99Value;
-    stats.windowP99DurationText = formatMs(p99Value);
+    stats.windowP99DurationText = formatDuration(p99Value);
     stats.recentDurationsText = historyText;
 
     scratch.length = HISTORY_CAPACITY;
@@ -313,9 +240,38 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private resetFrameStats(): void {
     this.frameStatsRef = createInitialStats();
-    this.frameStats.set(this.frameStatsRef);
     this.frameHistory.fill(0);
     this.historyWriteIndex = 0;
     this.historyLength = 0;
+    this.frameStats.set(this.frameStatsRef);
+    this.dispatchSnapshot();
+  }
+
+  private cloneRowsForStore(): TickerRow[] {
+    const source = this.rowsBuffer;
+    const clone: TickerRow[] = new Array(source.length);
+    for (let i = 0; i < source.length; i += 1) {
+      const row = source[i];
+      clone[i] = { ...row };
+    }
+    return clone;
+  }
+
+  private cloneSummaryForStore(): TickerSummary {
+    return { ...this.summaryBuffer };
+  }
+
+  private cloneStatsForStore(): FrameStats {
+    return { ...this.frameStatsRef };
+  }
+
+  private dispatchSnapshot(): void {
+    this.store.dispatch(
+      dashboardFrameUpdate({
+        rows: this.cloneRowsForStore(),
+        summary: this.cloneSummaryForStore(),
+        stats: this.cloneStatsForStore()
+      })
+    );
   }
 }

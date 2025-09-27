@@ -1,6 +1,8 @@
 import { provideZonelessChangeDetection } from '@angular/core';
+import { provideStore } from '@ngrx/store';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { AppComponent } from './app.component';
+import { dashboardReducer, DASHBOARD_FEATURE_KEY } from './state/dashboard.reducer';
 
 describe('AppComponent', () => {
   let fixture: ComponentFixture<AppComponent>;
@@ -36,7 +38,10 @@ describe('AppComponent', () => {
 
     TestBed.configureTestingModule({
       imports: [AppComponent],
-      providers: [provideZonelessChangeDetection()]
+      providers: [
+        provideZonelessChangeDetection(),
+        provideStore({ [DASHBOARD_FEATURE_KEY]: dashboardReducer })
+      ]
     });
 
     fixture = TestBed.createComponent(AppComponent);
