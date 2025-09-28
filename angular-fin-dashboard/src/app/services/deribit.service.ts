@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { DeribitInstrument, DeribitInstrumentSummary, DeribitListResponse } from '../models/deribit';
+import { normalizeDeribitIv } from '../data/options-chain';
 import { STATIC_INSTRUMENTS } from '../data/static-instruments';
 
 const BASE_URL = 'https://www.deribit.com/api/v2/public';
@@ -16,10 +17,16 @@ interface SummaryCacheEntry {
   summary: DeribitInstrumentSummary | null;
 }
 
+interface CurrencySummaryCacheEntry {
+  timestamp: number;
+  summaries: Map<string, DeribitInstrumentSummary>;
+}
+
 @Injectable({ providedIn: 'root' })
 export class DeribitService {
   private readonly instrumentCache = new Map<string, InstrumentsCacheEntry>();
   private readonly summaryCache = new Map<string, SummaryCacheEntry>();
+  private readonly currencySummaryCache = new Map<string, CurrencySummaryCacheEntry>();
 
   async fetchInstruments(currency: string): Promise<DeribitInstrument[]> {
     const key = currency.toUpperCase();
@@ -75,11 +82,51 @@ export class DeribitService {
       }
       const payload = (await response.json()) as DeribitListResponse<DeribitInstrumentSummary[]>;
       const summary = payload.result?.[0] ?? null;
-      this.summaryCache.set(key, { timestamp: now, summary });
-      return summary;
+      const normalizedSummary = summary
+        ? {
+            ...summary,
+            implied_volatility:
+              normalizeDeribitIv(summary.implied_volatility ?? summary.mark_iv) ?? undefined
+          }
+        : null;
+      this.summaryCache.set(key, { timestamp: now, summary: normalizedSummary });
+      return normalizedSummary;
     } catch (error) {
       this.summaryCache.set(key, { timestamp: now, summary: null });
       return null;
     }
+  }
+
+  async fetchBookSummaries(currency: string): Promise<Map<string, DeribitInstrumentSummary>> {
+    const key = currency.toUpperCase();
+    const cached = this.currencySummaryCache.get(key);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < TTL_MS) {
+      return cached.summaries;
+    }
+
+    const params = new URLSearchParams({ currency: key, kind: 'option' });
+    const response = await fetch(`${BASE_URL}/get_book_summary_by_currency?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`Deribit summary response ${response.status}`);
+    }
+
+    const payload = (await response.json()) as DeribitListResponse<DeribitInstrumentSummary[]>;
+    const summaries = payload.result ?? [];
+    const map = new Map<string, DeribitInstrumentSummary>();
+    for (const summary of summaries) {
+      const normalizedIv = normalizeDeribitIv(summary.implied_volatility ?? summary.mark_iv);
+      if (normalizedIv !== null) {
+        summary.implied_volatility = normalizedIv;
+        summary.mark_iv = normalizedIv;
+      } else {
+        summary.implied_volatility = undefined;
+        summary.mark_iv = undefined;
+      }
+      map.set(summary.instrument_name, summary);
+    }
+
+    this.currencySummaryCache.set(key, { timestamp: now, summaries: map });
+    return map;
   }
 }

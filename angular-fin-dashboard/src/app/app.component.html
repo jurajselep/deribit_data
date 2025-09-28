@@ -35,6 +35,19 @@
       </div>
 
       <ng-container *ngIf="selectedChain() as chain; else placeholderMeta">
+        <div class="app__maturities" role="tablist">
+          <button
+            *ngFor="let maturity of maturities()"
+            type="button"
+            role="tab"
+            class="app__maturity"
+            [class.app__maturity--active]="maturity.id === selectedMaturity()"
+            (click)="selectMaturity(maturity.id)"
+          >
+            {{ maturity.label }}
+          </button>
+        </div>
+
         <p class="app__meta">
           Underlying {{ chain.summary.underlyingText }} · ATM IV {{ chain.summary.atmIVText }} · Skew
           {{ chain.summary.skewText }}
@@ -104,19 +117,6 @@
             <span class="app__summary-label">Put OI</span>
             <span class="app__summary-value">{{ chain.summary.putOpenInterestText }}</span>
           </div>
-        </div>
-
-        <div class="app__maturities" role="tablist">
-          <button
-            *ngFor="let maturity of maturities()"
-            type="button"
-            role="tab"
-            class="app__maturity"
-            [class.app__maturity--active]="maturity.id === selectedMaturity()"
-            (click)="selectMaturity(maturity.id)"
-          >
-            {{ maturity.label }}
-          </button>
         </div>
       </ng-container>
       <ng-template #placeholderMeta>

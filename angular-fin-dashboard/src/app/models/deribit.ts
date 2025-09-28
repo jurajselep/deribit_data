@@ -23,8 +23,10 @@ export interface DeribitInstrumentSummary {
   ask_price?: number;
   delta?: number;
   gamma?: number;
+  mark_iv?: number;
   implied_volatility?: number;
   underlying_price?: number;
+  price_change?: number;
   creation_timestamp?: number;
 }
 
@@ -60,6 +62,9 @@ export interface DeribitTickerData {
   mark_price?: number;
   open_interest?: number;
   underlying_price?: number;
+  mark_iv?: number;
+  bid_iv?: number;
+  ask_iv?: number;
   iv?: number;
   greeks?: DeribitTickerGreeks;
   delta?: number;

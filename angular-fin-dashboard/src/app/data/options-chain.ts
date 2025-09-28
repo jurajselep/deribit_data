@@ -1,4 +1,9 @@
-import { DeribitInstrument, DeribitOptionType, DeribitTickerData } from '../models/deribit';
+import {
+  DeribitInstrument,
+  DeribitInstrumentSummary,
+  DeribitOptionType,
+  DeribitTickerData
+} from '../models/deribit';
 
 const MATURITY_LABEL = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -54,6 +59,19 @@ const toMaturityIdFromTimestamp = (timestamp: number): string => {
   const month = pad2(date.getUTCMonth() + 1);
   const day = pad2(date.getUTCDate());
   return `${year}-${month}-${day}`;
+};
+
+export const normalizeDeribitIv = (iv?: number | null): number | null => {
+  if (iv === null || iv === undefined || Number.isNaN(iv)) {
+    return null;
+  }
+
+  const value = Math.abs(iv);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  return value > 1 ? value / 100 : value;
 };
 
 export interface ParsedInstrumentName {
@@ -366,8 +384,9 @@ const applyTickerToQuote = (quote: OptionQuote, ticker: DeribitTickerData): void
     quote.change = ticker.stats.price_change;
   }
 
-  if (ticker.iv !== undefined) {
-    quote.iv = ticker.iv;
+  const normalizedIv = normalizeDeribitIv(ticker.mark_iv ?? ticker.iv);
+  if (normalizedIv !== null) {
+    quote.iv = normalizedIv;
   }
 
   if (ticker.stats?.volume !== undefined) {
@@ -387,6 +406,45 @@ const applyTickerToQuote = (quote: OptionQuote, ticker: DeribitTickerData): void
   if (gamma !== undefined) {
     quote.gamma = gamma;
   }
+
+  quote.bidText = formatCurrency(quote.bid);
+  quote.askText = formatCurrency(quote.ask);
+  quote.lastText = formatCurrency(quote.last);
+  quote.changeText = formatSignedCurrency(quote.change);
+  quote.ivText = `${formatPercent(quote.iv * 100)}%`;
+  quote.volumeText = formatNumber(quote.volume);
+  quote.openInterestText = formatNumber(quote.openInterest);
+  quote.deltaText = quote.delta.toFixed(3);
+  quote.gammaText = quote.gamma.toFixed(3);
+};
+
+const applySummaryToQuote = (quote: OptionQuote, summary: DeribitInstrumentSummary): void => {
+  if (summary.bid_price !== undefined && summary.bid_price !== null) {
+    quote.bid = summary.bid_price;
+  }
+  if (summary.ask_price !== undefined && summary.ask_price !== null) {
+    quote.ask = summary.ask_price;
+  }
+  if (summary.mark_price !== undefined && summary.mark_price !== null) {
+    quote.last = summary.mark_price;
+  }
+  if (summary.price_change !== undefined && summary.price_change !== null) {
+    quote.change = summary.price_change;
+  }
+  if (summary.volume !== undefined && summary.volume !== null) {
+    quote.volume = summary.volume;
+  }
+  if (summary.open_interest !== undefined && summary.open_interest !== null) {
+    quote.openInterest = summary.open_interest;
+  }
+
+  const normalizedIv = normalizeDeribitIv(summary.implied_volatility ?? summary.mark_iv);
+  if (normalizedIv !== null) {
+    quote.iv = normalizedIv;
+  }
+
+  quote.delta = 0;
+  quote.gamma = 0;
 
   quote.bidText = formatCurrency(quote.bid);
   quote.askText = formatCurrency(quote.ask);
@@ -516,7 +574,8 @@ export const createOptionDataBuffers = (): OptionDataBuffers => {
 };
 
 export const createOptionDataBuffersFromInstruments = (
-  instruments: DeribitInstrument[]
+  instruments: DeribitInstrument[],
+  summaries?: Map<string, DeribitInstrumentSummary>
 ): OptionDataBuffers => {
   const maturityMap = new Map<
     string,
@@ -559,6 +618,15 @@ export const createOptionDataBuffersFromInstruments = (
 
     const targetQuote = instrument.option_type === 'call' ? row.call : row.put;
     targetQuote.instrumentName = instrument.instrument_name;
+
+    const summary = summaries?.get(instrument.instrument_name);
+    if (summary) {
+      if (summary.underlying_price && summary.underlying_price > 0) {
+        entry.chain.summary.underlying = summary.underlying_price;
+        entry.chain.summary.underlyingText = formatCurrency(summary.underlying_price);
+      }
+      applySummaryToQuote(targetQuote, summary);
+    }
   });
 
   const sortedMaturities = Array.from(maturityMap.keys()).sort();
@@ -571,6 +639,7 @@ export const createOptionDataBuffersFromInstruments = (
   sortedMaturities.forEach((id) => {
     const entry = maturityMap.get(id)!;
     entry.chain.rows.sort((a, b) => a.strike - b.strike);
+    recalcChainSummary(entry.chain);
     chains[id] = entry.chain;
   });
 

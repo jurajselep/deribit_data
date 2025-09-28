@@ -13,6 +13,7 @@ import {
   createOptionDataBuffers,
   createOptionDataBuffersFromInstruments,
   maturityIdFromInstrumentName,
+  normalizeDeribitIv,
   mutateOptionData,
   updateChainsWithTicker
 } from './data/options-chain';
@@ -94,7 +95,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const points = this.smilePoints();
     return points.length ? points.map((p) => `${p.x},${p.y}`).join(' ') : '';
   });
-  readonly loopRunning = signal(true);
+  readonly loopRunning = signal(false);
 
   private frameId?: number;
   private lastFrameTime = now();
@@ -367,8 +368,16 @@ export class AppComponent implements OnInit, OnDestroy {
         const exp = a.expiration_timestamp - b.expiration_timestamp;
         return exp !== 0 ? exp : a.strike - b.strike;
       });
+      let bookSummaries: Map<string, DeribitInstrumentSummary> | undefined;
+      if (!this.isSyntheticCurrency(currency)) {
+        try {
+          bookSummaries = await this.deribit.fetchBookSummaries(currency);
+        } catch (error) {
+          console.warn('Unable to load book summaries', error);
+        }
+      }
       this.instruments.set(sorted);
-      this.initializeOptionData(sorted);
+      this.initializeOptionData(sorted, bookSummaries);
       const current = this.selectedInstrument();
       const exists = current && sorted.some((instrument) => instrument.instrument_name === current);
       const targetInstrument = exists ? current : sorted[0]?.instrument_name ?? null;
@@ -384,11 +393,14 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  private initializeOptionData(instruments: DeribitInstrument[]): void {
+  private initializeOptionData(
+    instruments: DeribitInstrument[],
+    summaries?: Map<string, DeribitInstrumentSummary>
+  ): void {
     this.clearChainTickerSubscriptions();
     this.optionBuffers = this.isSyntheticCurrency(this.selectedCurrency())
       ? createOptionDataBuffers()
-      : createOptionDataBuffersFromInstruments(instruments);
+      : createOptionDataBuffersFromInstruments(instruments, summaries);
 
     const maturities = this.optionBuffers.maturities;
     this.maturities.set(maturities);
@@ -585,6 +597,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     const previous = this.instrumentSummary();
+    const normalizedIv = normalizeDeribitIv(ticker.mark_iv ?? ticker.iv);
     const greeks = ticker.greeks ?? {};
     const summary: DeribitInstrumentSummary = {
       instrument_name: instrumentName,
@@ -599,7 +612,7 @@ export class AppComponent implements OnInit, OnDestroy {
       ask_price: ticker.best_ask_price ?? previous?.ask_price,
       delta: ticker.delta ?? greeks.delta ?? previous?.delta,
       gamma: ticker.gamma ?? greeks.gamma ?? previous?.gamma,
-      implied_volatility: ticker.iv ?? previous?.implied_volatility,
+      implied_volatility: normalizedIv ?? previous?.implied_volatility,
       underlying_price: ticker.underlying_price ?? previous?.underlying_price,
       creation_timestamp: ticker.timestamp ?? previous?.creation_timestamp
     };
