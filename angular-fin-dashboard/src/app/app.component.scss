@@ -166,20 +166,99 @@ h1 {
   display: block;
 }
 
+.app__smile-tooltip {
+  position: absolute;
+  min-width: 150px;
+  padding: 0.55rem 0.95rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 32px rgba(46, 42, 39, 0.12);
+  transform: translate(-50%, -120%);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--color-text);
+  backdrop-filter: blur(8px);
+}
+
+.app__smile-tooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 7px solid rgba(255, 255, 255, 0.92);
+  filter: drop-shadow(0 3px 6px rgba(46, 42, 39, 0.18));
+}
+
+.app__smile-tooltip__label {
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.app__smile-tooltip__strike {
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.app__smile-tooltip__iv {
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--color-accent);
+}
+
+.app__smile-grid {
+  pointer-events: none;
+}
+
+.app__smile-grid line {
+  stroke: rgba(46, 42, 39, 0.16);
+  stroke-width: 0.7;
+  stroke-dasharray: 6 10;
+}
+
+.app__smile-grid line:first-child,
+.app__smile-grid line:last-child {
+  stroke-dasharray: none;
+  stroke-width: 0.85;
+}
+
 .app__smile-y-axis {
   position: absolute;
   top: 1rem;
   bottom: 1.5rem;
   left: 1.05rem;
   display: flex;
+  align-items: stretch;
+  gap: 0.85rem;
+  pointer-events: none;
+}
+
+.app__smile-y-axis-ticks {
+  display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: flex-end;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(47, 44, 41, 0.45);
-  pointer-events: none;
+  color: rgba(47, 44, 41, 0.55);
+}
+
+.app__smile-y-tick {
+  line-height: 1;
+}
+
+.app__smile-y-tick--minor {
+  color: rgba(47, 44, 41, 0.38);
 }
 
 .app__smile-y-label {
@@ -187,6 +266,8 @@ h1 {
   transform: rotate(180deg);
   font-size: 0.64rem;
   letter-spacing: 0.12em;
+  color: rgba(47, 44, 41, 0.5);
+  align-self: center;
 }
 
 .app__smile-axis {

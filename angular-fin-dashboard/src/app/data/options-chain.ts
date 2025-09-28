@@ -36,6 +36,9 @@ const formatNumber = (value: number): string =>
 
 const formatSignedCurrency = (value: number): string => `${value >= 0 ? '+' : ''}${formatCurrency(value)}`;
 
+const formatIvDisplay = (iv: number): string =>
+  Number.isFinite(iv) && iv > 0 ? `${formatPercent(iv * 100)}%` : '--';
+
 const pad2 = (value: number): string => value.toString().padStart(2, '0');
 
 const MONTH_TOKEN_MAP: Record<string, string> = {
@@ -228,7 +231,7 @@ const createEmptyQuote = (instrumentName: string | null = null): OptionQuote => 
   askText: formatCurrency(0),
   lastText: formatCurrency(0),
   changeText: formatSignedCurrency(0),
-  ivText: `${formatPercent(0)}%`,
+  ivText: formatIvDisplay(0),
   volumeText: formatNumber(0),
   openInterestText: formatNumber(0),
   deltaText: '0.000',
@@ -257,8 +260,8 @@ const createEmptySummary = (maturity: string, label: string): OptionChainSummary
     callOpenInterestText: '0',
     putOpenInterest: 0,
     putOpenInterestText: '0',
-    atmIV: 0,
-    atmIVText: '0.00%',
+    atmIV: Number.NaN,
+    atmIVText: '--',
     skew: 0,
     skewText: '0.00%',
     updatedAt: now,
@@ -294,12 +297,33 @@ const createQuote = (strike: number, underlying: number, isCall: boolean): Optio
     askText: formatCurrency(ask),
     lastText: formatCurrency(last),
     changeText: `${last >= 0 ? '+' : ''}${formatCurrency(last - basePrice)}`,
-    ivText: `${formatPercent(iv * 100)}%`,
+    ivText: formatIvDisplay(iv),
     volumeText: formatNumber(volume),
     openInterestText: formatNumber(openInterest),
     deltaText: delta.toFixed(3),
     gammaText: gamma.toFixed(3)
   };
+};
+
+const resetQuoteForPendingData = (quote: OptionQuote): void => {
+  quote.bid = 0;
+  quote.ask = 0;
+  quote.last = 0;
+  quote.change = 0;
+  quote.iv = Number.NaN;
+  quote.volume = 0;
+  quote.openInterest = 0;
+  quote.delta = 0;
+  quote.gamma = 0;
+  quote.bidText = formatCurrency(0);
+  quote.askText = formatCurrency(0);
+  quote.lastText = formatCurrency(0);
+  quote.changeText = formatSignedCurrency(0);
+  quote.ivText = formatIvDisplay(quote.iv);
+  quote.volumeText = formatNumber(0);
+  quote.openInterestText = formatNumber(0);
+  quote.deltaText = '0.000';
+  quote.gammaText = '0.000';
 };
 
 const createRow = (strike: number, underlying: number): OptionRow => {
@@ -354,7 +378,7 @@ const updateQuote = (
   quote.askText = formatCurrency(quote.ask);
   quote.lastText = formatCurrency(quote.last);
   quote.changeText = `${quote.change >= 0 ? '+' : ''}${formatCurrency(quote.change)}`;
-  quote.ivText = `${formatPercent(quote.iv * 100)}%`;
+  quote.ivText = formatIvDisplay(quote.iv);
   quote.volumeText = formatNumber(quote.volume);
   quote.openInterestText = formatNumber(quote.openInterest);
   quote.deltaText = quote.delta.toFixed(3);
@@ -411,7 +435,7 @@ const applyTickerToQuote = (quote: OptionQuote, ticker: DeribitTickerData): void
   quote.askText = formatCurrency(quote.ask);
   quote.lastText = formatCurrency(quote.last);
   quote.changeText = formatSignedCurrency(quote.change);
-  quote.ivText = `${formatPercent(quote.iv * 100)}%`;
+  quote.ivText = formatIvDisplay(quote.iv);
   quote.volumeText = formatNumber(quote.volume);
   quote.openInterestText = formatNumber(quote.openInterest);
   quote.deltaText = quote.delta.toFixed(3);
@@ -450,7 +474,7 @@ const applySummaryToQuote = (quote: OptionQuote, summary: DeribitInstrumentSumma
   quote.askText = formatCurrency(quote.ask);
   quote.lastText = formatCurrency(quote.last);
   quote.changeText = formatSignedCurrency(quote.change);
-  quote.ivText = `${formatPercent(quote.iv * 100)}%`;
+  quote.ivText = formatIvDisplay(quote.iv);
   quote.volumeText = formatNumber(quote.volume);
   quote.openInterestText = formatNumber(quote.openInterest);
   quote.deltaText = quote.delta.toFixed(3);
@@ -467,7 +491,7 @@ const recalcChainSummary = (chain: OptionChain, underlyingOverride?: number): vo
   let putVolume = 0;
   let callOI = 0;
   let putOI = 0;
-  let closestIv = chain.summary.atmIV;
+  let closestIv: number | null = null;
   let closestDiff = Number.POSITIVE_INFINITY;
 
   chain.rows.forEach((row) => {
@@ -477,10 +501,14 @@ const recalcChainSummary = (chain: OptionChain, underlyingOverride?: number): vo
     putOI += row.put.openInterest;
 
     if (underlying > 0) {
-      const diff = Math.abs(row.strike - underlying);
-      if (diff <= closestDiff) {
-        closestDiff = diff;
-        closestIv = (row.call.iv + row.put.iv) / 2;
+      const callIv = row.call.iv;
+      const putIv = row.put.iv;
+      if (Number.isFinite(callIv) && Number.isFinite(putIv) && callIv > 0 && putIv > 0) {
+        const diff = Math.abs(row.strike - underlying);
+        if (diff <= closestDiff) {
+          closestDiff = diff;
+          closestIv = (callIv + putIv) / 2;
+        }
       }
     }
   });
@@ -494,10 +522,10 @@ const recalcChainSummary = (chain: OptionChain, underlyingOverride?: number): vo
   chain.summary.putOpenInterest = putOI;
   chain.summary.putOpenInterestText = formatNumber(putOI);
 
-  if (underlying > 0 && closestDiff !== Number.POSITIVE_INFINITY) {
+  if (closestIv !== null) {
     chain.summary.atmIV = closestIv;
   }
-  chain.summary.atmIVText = `${formatPercent(chain.summary.atmIV * 100)}%`;
+  chain.summary.atmIVText = formatIvDisplay(chain.summary.atmIV);
 
   const totalVolume = callVolume + putVolume;
   const skew = totalVolume === 0 ? 0 : ((callVolume - putVolume) / totalVolume) * 100;
@@ -554,7 +582,7 @@ const updateChain = (chain: OptionChain): void => {
   chain.summary.putOpenInterest = putOI;
   chain.summary.putOpenInterestText = formatNumber(putOI);
   chain.summary.atmIV = atmCount ? atmIV / atmCount : chain.summary.atmIV;
-  chain.summary.atmIVText = `${formatPercent(chain.summary.atmIV * 100)}%`;
+  chain.summary.atmIVText = formatIvDisplay(chain.summary.atmIV);
   const skew = callVolume === 0 ? 0 : ((callVolume - putVolume) / (callVolume + putVolume)) * 100;
   chain.summary.skew = skew;
   chain.summary.skewText = `${skew >= 0 ? '+' : ''}${formatPercent(skew)}%`;
@@ -612,6 +640,8 @@ export const createOptionDataBuffersFromInstruments = (
     let row = entry.rowsByStrike.get(instrument.strike);
     if (!row) {
       row = createEmptyRow(instrument.strike, underlying);
+      resetQuoteForPendingData(row.call);
+      resetQuoteForPendingData(row.put);
       entry.rowsByStrike.set(instrument.strike, row);
       entry.chain.rows.push(row);
     }
@@ -697,7 +727,12 @@ export const updateChainsWithTicker = (
 
   let row = chain.rows.find((item) => item.strike === parsed.strike);
   if (!row) {
-    row = createEmptyRow(parsed.strike, ticker.underlying_price ?? chain.summary.underlying ?? parsed.strike);
+    row = createEmptyRow(
+      parsed.strike,
+      ticker.underlying_price ?? chain.summary.underlying ?? parsed.strike
+    );
+    resetQuoteForPendingData(row.call);
+    resetQuoteForPendingData(row.put);
 
     chain.rows.push(row);
     chain.rows.sort((a, b) => a.strike - b.strike);

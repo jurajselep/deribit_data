@@ -39,7 +39,14 @@ type FrameMeasurement = {
 
 type AppState = { [DASHBOARD_FEATURE_KEY]: DashboardState };
 
-type SmilePoint = { x: number; y: number; strike: number; iv: number };
+type SmilePoint = {
+  x: number;
+  y: number;
+  strike: number;
+  strikeText: string;
+  iv: number;
+  ivText: string;
+};
 type SmileSeries = {
   maturity: string;
   label: string;
@@ -48,7 +55,20 @@ type SmileSeries = {
   path: string;
   isSelected: boolean;
 };
-type SmileAxis = { minStrike: string; maxStrike: string; minIv: string; maxIv: string };
+type SmileAxis = {
+  minStrike: string;
+  maxStrike: string;
+  minIv: string;
+  maxIv: string;
+  ticks: Array<{ label: string; position: number }>;
+};
+type SmileTooltip = {
+  x: number;
+  y: number;
+  strike: string;
+  iv: string;
+  maturity: string;
+};
 type VolSurfaceSeries = {
   strikes: number[];
   strikeLabels: string[];
@@ -65,6 +85,8 @@ const MIN_SAMPLES_FOR_ASSESSMENT = 90;
 
 const SYNTHETIC_CURRENCY = 'SYNTH';
 const SMILE_COLORS = ['#76dcb2', '#82a3f2', '#fcbf49', '#f472b6', '#38bdf8', '#f97316'];
+const SMILE_VIEWBOX_WIDTH = 600;
+const SMILE_VIEWBOX_HEIGHT = 160;
 
 type CurrencyOption = {
   value: string;
@@ -126,12 +148,20 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly frameStats = signal<FrameStats>(this.frameStatsRef, { equal: () => false });
   readonly frameStatsView = computed(() => this.frameStats());
   readonly smileSeries = signal<SmileSeries[]>([], { equal: () => false });
-  readonly smileAxis = signal<SmileAxis>({ minStrike: '', maxStrike: '', minIv: '', maxIv: '' });
+  readonly smileAxis = signal<SmileAxis>({
+    minStrike: '',
+    maxStrike: '',
+    minIv: '',
+    maxIv: '',
+    ticks: []
+  });
   readonly smileFilter = signal<string | null>(null);
+  readonly smileTooltip = signal<SmileTooltip | null>(null);
   readonly volSurface = signal<VolSurfaceSeries | null>(null, { equal: () => false });
   readonly loopRunning = signal(false);
 
   private volSurfaceCanvasRef?: ElementRef<HTMLCanvasElement>;
+  private smileContainerRef?: ElementRef<HTMLDivElement>;
 
   @ViewChild('volSurfaceCanvas')
   set volSurfaceCanvas(element: ElementRef<HTMLCanvasElement> | undefined) {
@@ -139,6 +169,11 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       this.volSurfaceCanvasRef = element;
       queueMicrotask(() => this.initVolSurface());
     }
+  }
+
+  @ViewChild('smileContainer')
+  set smileContainer(element: ElementRef<HTMLDivElement> | undefined) {
+    this.smileContainerRef = element;
   }
 
   private frameId?: number;
@@ -228,6 +263,40 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   toggleSmileFilter(maturity: string): void {
     const current = this.smileFilter();
     this.smileFilter.set(current === maturity ? null : maturity);
+  }
+
+  showSmileTooltip(event: MouseEvent, point: SmilePoint, series: SmileSeries): void {
+    if (!this.smileContainerRef) {
+      return;
+    }
+
+    const target = event.target as SVGCircleElement | null;
+    const svg = target?.ownerSVGElement;
+    if (!svg) {
+      return;
+    }
+
+    const containerRect = this.smileContainerRef.nativeElement.getBoundingClientRect();
+    const svgRect = svg.getBoundingClientRect();
+
+    const relativeX = (point.x / SMILE_VIEWBOX_WIDTH) * svgRect.width + (svgRect.left - containerRect.left);
+    const relativeY = (point.y / SMILE_VIEWBOX_HEIGHT) * svgRect.height + (svgRect.top - containerRect.top);
+    const safeX = Math.min(containerRect.width - 12, Math.max(12, relativeX));
+    const safeY = Math.min(containerRect.height - 12, Math.max(12, relativeY));
+
+    this.smileTooltip.set({
+      x: safeX,
+      y: safeY,
+      strike: point.strikeText,
+      iv: point.ivText,
+      maturity: series.label
+    });
+  }
+
+  hideSmileTooltip(): void {
+    if (this.smileTooltip()) {
+      this.smileTooltip.set(null);
+    }
   }
 
   trackByStrike = (_: number, row: OptionRow) => row.strike;
@@ -516,7 +585,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!maturities.length) {
       return {
         series: [],
-        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '' },
+        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '', ticks: [] },
         surface: null
       };
     }
@@ -581,7 +650,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (rawSeries.length === 0) {
       return {
         series: [],
-        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '' },
+        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '', ticks: [] },
         surface: null
       };
     }
@@ -619,7 +688,9 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
           x: Number(x.toFixed(2)),
           y: Number(y.toFixed(2)),
           strike: row.strike,
-          iv: row.iv
+          strikeText: row.strikeText,
+          iv: row.iv,
+          ivText: this.formatIv(row.iv)
         };
       });
 
@@ -638,11 +709,21 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     const lastSeries = rawSeries[rawSeries.length - 1];
     const lastRow = lastSeries?.rows[lastSeries.rows.length - 1];
 
+    const tickDivisions = 4;
+    const ticks: Array<{ label: string; position: number }> = [];
+    for (let i = 0; i <= tickDivisions; i += 1) {
+      const ratio = i / tickDivisions;
+      const value = maxIv - ratio * ivRange;
+      const y = height - ((value - minIv) / ivRange) * (height - topPadding) - topPadding;
+      ticks.push({ label: this.formatIv(value), position: Number(y.toFixed(2)) });
+    }
+
     const axis: SmileAxis = {
       minStrike: minStrikeText || firstRow?.strikeText || '',
       maxStrike: maxStrikeText || lastRow?.strikeText || '',
       minIv: this.formatIv(minIv),
-      maxIv: this.formatIv(maxIv)
+      maxIv: this.formatIv(maxIv),
+      ticks
     };
 
     const strikeEntries = Array.from(strikeMap.entries()).sort((a, b) => a[0] - b[0]);
