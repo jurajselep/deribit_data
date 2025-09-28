@@ -5,7 +5,7 @@ Deribit-inspired crypto options chain rendered every animation frame with Angula
 ## Performance Optimizations
 
 - **Zoneless signal graph**: the app bootstraps with `provideZonelessChangeDetection()` so Angular runs without Zone.js. Every state holder is a signal, keeping bindings reactive without macro-task patches.
-- **Deribit-style option chain**: maturities, strikes, greeks, and volume/OI summaries update every frame with a synthetic BTC surface; expiries can be swapped instantly via the minimal header selector.
+- **Deribit-style option chain**: live instrument lists come from the public Deribit API (cached client-side with a static fallback), and maturities/strikes/greeks update every frame with a synthetic BTC surface tied to the selected contract.
 - **RAF-driven loop**: option generation runs inside a single `requestAnimationFrame`, keeping work aligned with the browser’s paint cycle.
 - **In-place data reuse**: mutable option books stay resident in memory while writable signals and NgRx actions fan out cloned snapshots (using `equal: () => false`) to avoid garbage and still wake the view layer.
 - **Frame analytics buffer**: a 180-frame ring buffer tracks min/max, p95/p99, and the latest dozen frame costs so bottlenecks are visible straight from the UI.

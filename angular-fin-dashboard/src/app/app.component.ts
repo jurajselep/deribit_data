@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, signal } from '@angular/core';
-import { NgClass, NgFor, NgIf } from '@angular/common';
+import { DecimalPipe, NgClass, NgFor, NgIf } from '@angular/common';
 import { Store } from '@ngrx/store';
 import { dashboardFrameUpdate, dashboardSelectMaturity } from './state/dashboard.actions';
 import { DASHBOARD_FEATURE_KEY, DashboardState } from './state/dashboard.reducer';
@@ -11,11 +11,14 @@ import {
   OptionRow,
   cloneChains,
   createOptionDataBuffers,
-  mutateOptionData
+  createOptionDataBuffersFromInstruments,
+  maturityIdFromInstrumentName,
+  mutateOptionData,
+  updateChainsWithTicker
 } from './data/options-chain';
-
-const FRAME_TARGET_MS = 16.67;
-const MIN_SAMPLES_FOR_ASSESSMENT = 90;
+import { DeribitInstrument, DeribitInstrumentSummary, DeribitTickerData } from './models/deribit';
+import { DeribitService } from './services/deribit.service';
+import { DeribitWebsocketService } from './services/deribit-websocket.service';
 
 type FrameMeasurement = {
   frameSpacing: number;
@@ -27,6 +30,16 @@ type AppState = { [DASHBOARD_FEATURE_KEY]: DashboardState };
 type SmilePoint = { x: number; y: number; strike: number; iv: number };
 type SmileAxis = { minStrike: string; maxStrike: string };
 
+const FRAME_TARGET_MS = 16.67;
+const MIN_SAMPLES_FOR_ASSESSMENT = 90;
+
+const SYNTHETIC_CURRENCY = 'SYNTH';
+
+type CurrencyOption = {
+  value: string;
+  label: string;
+};
+
 const now = (): number =>
   typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
@@ -35,14 +48,31 @@ const now = (): number =>
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [NgClass, NgFor, NgIf],
+  imports: [NgClass, NgFor, NgIf, DecimalPipe],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AppComponent implements OnInit, OnDestroy {
-  private readonly optionBuffers: OptionDataBuffers = createOptionDataBuffers();
+  private optionBuffers: OptionDataBuffers = createOptionDataBuffers();
   private frameStatsRef: FrameStats = createInitialStats();
+  private tickerUnsubscribe: (() => void) | null = null;
+  private currentTickerInstrument: string | null = null;
+  private readonly chainTickerSubscriptions = new Map<string, () => void>();
+
+  readonly currencies: CurrencyOption[] = [
+    { value: 'BTC', label: 'BTC' },
+    { value: 'ETH', label: 'ETH' },
+    { value: SYNTHETIC_CURRENCY, label: 'Synthetic Data' }
+  ];
+  readonly selectedCurrency = signal<string>('BTC');
+  readonly instruments = signal<DeribitInstrument[]>([], { equal: () => false });
+  readonly instrumentsLoading = signal(false);
+  readonly instrumentsError = signal<string | null>(null);
+  readonly selectedInstrument = signal<string | null>(null);
+  readonly instrumentSummary = signal<DeribitInstrumentSummary | null>(null, { equal: () => false });
+  readonly instrumentSummaryLoading = signal(false);
+  readonly instrumentSummaryError = signal<string | null>(null);
 
   readonly maturities = signal(this.optionBuffers.maturities);
   readonly selectedMaturity = signal(this.optionBuffers.maturities[0]?.id ?? '', {
@@ -74,15 +104,22 @@ export class AppComponent implements OnInit, OnDestroy {
   private historyLength = 0;
   private readonly sortScratch: number[] = new Array(HISTORY_CAPACITY);
 
-  constructor(private readonly store: Store<AppState>) {}
+  constructor(
+    private readonly store: Store<AppState>,
+    private readonly deribit: DeribitService,
+    private readonly deribitWebsocket: DeribitWebsocketService
+  ) {}
 
   ngOnInit(): void {
     this.dispatchSnapshot();
+    void this.loadInstruments(this.selectedCurrency());
     this.scheduleNextFrame();
   }
 
   ngOnDestroy(): void {
     this.stopLoop();
+    this.unsubscribeFromTicker();
+    this.clearChainTickerSubscriptions();
   }
 
   startLoop(): void {
@@ -106,11 +143,25 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   refreshOnce(): void {
-    const dataStart = performance.now();
-    mutateOptionData(this.optionBuffers);
-    const dataDuration = performance.now() - dataStart;
-
+    const dataDuration = this.mutateSyntheticData();
     this.afterFrame({ frameSpacing: 0, dataDuration });
+  }
+
+  changeCurrency(currency: string): void {
+    if (currency === this.selectedCurrency()) {
+      return;
+    }
+    this.selectedCurrency.set(currency);
+    this.selectedInstrument.set(null);
+    this.instruments.set([]);
+    this.unsubscribeFromTicker();
+    this.clearChainTickerSubscriptions();
+    void this.loadInstruments(currency);
+  }
+
+  changeInstrument(instrumentName: string): void {
+    if (!instrumentName) return;
+    this.applyInstrument(instrumentName);
   }
 
   selectMaturity(maturity: string): void {
@@ -124,9 +175,19 @@ export class AppComponent implements OnInit, OnDestroy {
     const smileData = this.buildSmileData(currentChain);
     this.smilePoints.set(smileData.points);
     this.smileAxis.set(smileData.axis);
+    this.onMaturityChanged(maturity);
   }
 
   trackByStrike = (_: number, row: OptionRow) => row.strike;
+
+  private mutateSyntheticData(): number {
+    if (!this.isSyntheticCurrency(this.selectedCurrency())) {
+      return 0;
+    }
+    const start = performance.now();
+    mutateOptionData(this.optionBuffers);
+    return performance.now() - start;
+  }
 
   private scheduleNextFrame(): void {
     if (!this.loopRunning()) {
@@ -142,9 +203,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const frameSpacing = timestamp - this.lastFrameTime;
     this.lastFrameTime = timestamp;
 
-    const dataStart = performance.now();
-    mutateOptionData(this.optionBuffers);
-    const dataDuration = performance.now() - dataStart;
+    const dataDuration = this.mutateSyntheticData();
 
     this.afterFrame({
       frameSpacing: frameSpacing > 0 ? frameSpacing : 0,
@@ -295,6 +354,107 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  private async loadInstruments(currency: string): Promise<void> {
+    this.instrumentsLoading.set(true);
+    this.instrumentsError.set(null);
+    this.instrumentSummary.set(null);
+    this.instrumentSummaryError.set(null);
+    this.instrumentSummaryLoading.set(false);
+    try {
+      const instruments = await this.deribit.fetchInstruments(currency);
+      const sorted = [...instruments].filter((instrument) => instrument.kind === 'option');
+      sorted.sort((a, b) => {
+        const exp = a.expiration_timestamp - b.expiration_timestamp;
+        return exp !== 0 ? exp : a.strike - b.strike;
+      });
+      this.instruments.set(sorted);
+      this.initializeOptionData(sorted);
+      const current = this.selectedInstrument();
+      const exists = current && sorted.some((instrument) => instrument.instrument_name === current);
+      const targetInstrument = exists ? current : sorted[0]?.instrument_name ?? null;
+      this.applyInstrument(targetInstrument ?? null);
+    } catch (error) {
+      const message = (error as Error).message ?? 'Unable to load instruments';
+      this.instrumentsError.set(message);
+      this.instrumentSummaryError.set(message);
+      this.instruments.set([]);
+      this.instrumentSummary.set(null);
+    } finally {
+      this.instrumentsLoading.set(false);
+    }
+  }
+
+  private initializeOptionData(instruments: DeribitInstrument[]): void {
+    this.clearChainTickerSubscriptions();
+    this.optionBuffers = this.isSyntheticCurrency(this.selectedCurrency())
+      ? createOptionDataBuffers()
+      : createOptionDataBuffersFromInstruments(instruments);
+
+    const maturities = this.optionBuffers.maturities;
+    this.maturities.set(maturities);
+    const initialMaturity = maturities[0]?.id ?? '';
+    this.selectedMaturity.set(initialMaturity);
+    this.dispatchSnapshot();
+    this.onMaturityChanged(initialMaturity);
+  }
+
+  private applyInstrument(instrumentName: string | null): void {
+    this.selectedInstrument.set(instrumentName);
+    this.unsubscribeFromTicker();
+    if (!instrumentName) {
+      this.instrumentSummary.set(null);
+      this.instrumentSummaryError.set(null);
+      return;
+    }
+
+    const maturity = this.parseInstrumentMaturity(instrumentName);
+    if (!maturity) {
+      this.instrumentSummary.set(null);
+      this.instrumentSummaryError.set(null);
+      return;
+    }
+
+    if (maturity !== this.selectedMaturity()) {
+      this.selectedMaturity.set(maturity);
+      this.store.dispatch(dashboardSelectMaturity({ maturity }));
+    }
+
+    const chains = this.chains();
+    const currentChain = chains[maturity] ?? null;
+    const smileData = this.buildSmileData(currentChain);
+    this.smilePoints.set(smileData.points);
+    this.smileAxis.set(smileData.axis);
+    this.onMaturityChanged(maturity);
+
+    if (this.isSyntheticCurrency(this.selectedCurrency())) {
+      this.instrumentSummary.set(null);
+      this.instrumentSummaryError.set(null);
+      return;
+    }
+
+    this.subscribeToTicker(instrumentName);
+    void this.loadInstrumentSummary(instrumentName);
+  }
+
+  private async loadInstrumentSummary(instrumentName: string): Promise<void> {
+    if (this.isSyntheticCurrency(this.selectedCurrency())) {
+      this.instrumentSummary.set(null);
+      this.instrumentSummaryError.set(null);
+      return;
+    }
+    this.instrumentSummaryLoading.set(true);
+    this.instrumentSummaryError.set(null);
+    try {
+      const summary = await this.deribit.fetchInstrumentSummary(instrumentName);
+      this.instrumentSummary.set(summary);
+    } catch (error) {
+      this.instrumentSummary.set(null);
+      this.instrumentSummaryError.set((error as Error).message ?? 'Unable to load instrument data');
+    } finally {
+      this.instrumentSummaryLoading.set(false);
+    }
+  }
+
   private buildSmileData(chain: OptionChain | null): { points: SmilePoint[]; axis: SmileAxis } {
     if (!chain || chain.rows.length === 0) {
       return { points: [], axis: { minStrike: '', maxStrike: '' } };
@@ -341,5 +501,131 @@ export class AppComponent implements OnInit, OnDestroy {
         maxStrike: chain.rows[chain.rows.length - 1]?.strikeText ?? ''
       }
     };
+  }
+
+  private parseInstrumentMaturity(instrumentName: string): string | null {
+    return maturityIdFromInstrumentName(instrumentName);
+  }
+
+  private isSyntheticCurrency(currency: string | null): boolean {
+    return (currency ?? '').toUpperCase() === SYNTHETIC_CURRENCY;
+  }
+
+  private subscribeToTicker(instrumentName: string): void {
+    if (!instrumentName || this.isSyntheticCurrency(this.selectedCurrency())) {
+      return;
+    }
+    this.unsubscribeFromTicker();
+    this.currentTickerInstrument = instrumentName;
+    this.tickerUnsubscribe = this.deribitWebsocket.subscribeTicker(instrumentName, (data) =>
+      this.onTickerUpdate(instrumentName, data)
+    );
+  }
+
+  private unsubscribeFromTicker(): void {
+    if (this.tickerUnsubscribe) {
+      this.tickerUnsubscribe();
+      this.tickerUnsubscribe = null;
+    }
+    this.currentTickerInstrument = null;
+  }
+
+  private clearChainTickerSubscriptions(): void {
+    this.chainTickerSubscriptions.forEach((unsubscribe) => unsubscribe());
+    this.chainTickerSubscriptions.clear();
+  }
+
+  private updateChainTickerSubscriptions(maturity: string): void {
+    if (!maturity || this.isSyntheticCurrency(this.selectedCurrency())) {
+      this.clearChainTickerSubscriptions();
+      return;
+    }
+
+    const chain = this.optionBuffers.chains[maturity];
+    if (!chain) {
+      this.clearChainTickerSubscriptions();
+      return;
+    }
+
+    const nextInstruments = new Set<string>();
+    chain.rows.forEach((row) => {
+      if (row.call.instrumentName) {
+        nextInstruments.add(row.call.instrumentName);
+      }
+      if (row.put.instrumentName) {
+        nextInstruments.add(row.put.instrumentName);
+      }
+    });
+
+    for (const [instrument, unsubscribe] of this.chainTickerSubscriptions.entries()) {
+      if (!nextInstruments.has(instrument)) {
+        unsubscribe();
+        this.chainTickerSubscriptions.delete(instrument);
+      }
+    }
+
+    nextInstruments.forEach((instrument) => {
+      if (this.chainTickerSubscriptions.has(instrument)) {
+        return;
+      }
+      const unsubscribe = this.deribitWebsocket.subscribeTicker(instrument, (data) =>
+        this.onChainTickerUpdate(data)
+      );
+      this.chainTickerSubscriptions.set(instrument, unsubscribe);
+    });
+  }
+
+  private onMaturityChanged(maturity: string): void {
+    this.updateChainTickerSubscriptions(maturity);
+  }
+
+  private onTickerUpdate(instrumentName: string, ticker: DeribitTickerData): void {
+    if (this.currentTickerInstrument !== instrumentName) {
+      return;
+    }
+
+    const previous = this.instrumentSummary();
+    const greeks = ticker.greeks ?? {};
+    const summary: DeribitInstrumentSummary = {
+      instrument_name: instrumentName,
+      mark_price: ticker.mark_price ?? previous?.mark_price ?? 0,
+      open_interest: ticker.open_interest ?? previous?.open_interest ?? 0,
+      volume:
+        ticker.stats?.volume !== undefined
+          ? ticker.stats.volume
+          : previous?.volume ?? 0,
+      last_price: ticker.last_price ?? previous?.last_price,
+      bid_price: ticker.best_bid_price ?? previous?.bid_price,
+      ask_price: ticker.best_ask_price ?? previous?.ask_price,
+      delta: ticker.delta ?? greeks.delta ?? previous?.delta,
+      gamma: ticker.gamma ?? greeks.gamma ?? previous?.gamma,
+      implied_volatility: ticker.iv ?? previous?.implied_volatility,
+      underlying_price: ticker.underlying_price ?? previous?.underlying_price,
+      creation_timestamp: ticker.timestamp ?? previous?.creation_timestamp
+    };
+
+    this.instrumentSummary.set(summary);
+    this.instrumentSummaryError.set(null);
+  }
+
+  private onChainTickerUpdate(ticker: DeribitTickerData): void {
+    if (this.isSyntheticCurrency(this.selectedCurrency())) {
+      return;
+    }
+
+    const maturity = updateChainsWithTicker(this.optionBuffers.chains, ticker);
+    if (!maturity) {
+      return;
+    }
+
+    const chainsCopy = cloneChains(this.optionBuffers.chains);
+    this.chains.set(chainsCopy);
+
+    if (maturity === this.selectedMaturity()) {
+      const currentChain = chainsCopy[maturity] ?? null;
+      const smileData = this.buildSmileData(currentChain);
+      this.smilePoints.set(smileData.points);
+      this.smileAxis.set(smileData.axis);
+    }
   }
 }

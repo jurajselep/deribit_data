@@ -1,3 +1,5 @@
+import { DeribitInstrument, DeribitOptionType, DeribitTickerData } from '../models/deribit';
+
 const MATURITY_LABEL = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
@@ -26,6 +28,85 @@ const formatNumber = (value: number): string =>
   new Intl.NumberFormat('en-US', {
     maximumFractionDigits: 0
   }).format(value);
+
+const formatSignedCurrency = (value: number): string => `${value >= 0 ? '+' : ''}${formatCurrency(value)}`;
+
+const pad2 = (value: number): string => value.toString().padStart(2, '0');
+
+const MONTH_TOKEN_MAP: Record<string, string> = {
+  JAN: '01',
+  FEB: '02',
+  MAR: '03',
+  APR: '04',
+  MAY: '05',
+  JUN: '06',
+  JUL: '07',
+  AUG: '08',
+  SEP: '09',
+  OCT: '10',
+  NOV: '11',
+  DEC: '12'
+};
+
+const toMaturityIdFromTimestamp = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const year = date.getUTCFullYear();
+  const month = pad2(date.getUTCMonth() + 1);
+  const day = pad2(date.getUTCDate());
+  return `${year}-${month}-${day}`;
+};
+
+export interface ParsedInstrumentName {
+  maturityId: string;
+  strike: number;
+  optionType: DeribitOptionType;
+}
+
+export const parseDeribitInstrumentName = (instrumentName: string): ParsedInstrumentName | null => {
+  const parts = instrumentName.split('-');
+  if (parts.length < 4) {
+    return null;
+  }
+
+  const datePart = parts[1];
+  if (datePart.length !== 7) {
+    return null;
+  }
+
+  const day = datePart.slice(0, 2);
+  const monthToken = datePart.slice(2, 5).toUpperCase();
+  const yearFragment = datePart.slice(5);
+  const month = MONTH_TOKEN_MAP[monthToken];
+  if (!month) {
+    return null;
+  }
+
+  const strike = Number(parts[2]);
+  if (!Number.isFinite(strike)) {
+    return null;
+  }
+
+  const optionCode = parts[3]?.toUpperCase();
+  let optionType: DeribitOptionType;
+  if (optionCode === 'C') {
+    optionType = 'call';
+  } else if (optionCode === 'P') {
+    optionType = 'put';
+  } else {
+    return null;
+  }
+
+  return {
+    maturityId: `20${yearFragment}-${month}-${day}`,
+    strike,
+    optionType
+  };
+};
+
+export const maturityIdFromInstrumentName = (instrumentName: string): string | null => {
+  const parsed = parseDeribitInstrumentName(instrumentName);
+  return parsed ? parsed.maturityId : null;
+};
 
 const MATURITIES = [
   '2025-01-31',
@@ -56,6 +137,7 @@ export interface OptionQuote {
   openInterest: number;
   delta: number;
   gamma: number;
+  instrumentName: string | null;
   bidText: string;
   askText: string;
   lastText: string;
@@ -113,6 +195,59 @@ const toLabel = (id: string): string => {
   return MATURITY_LABEL.format(date);
 };
 
+const createEmptyQuote = (instrumentName: string | null = null): OptionQuote => ({
+  bid: 0,
+  ask: 0,
+  last: 0,
+  change: 0,
+  iv: 0,
+  volume: 0,
+  openInterest: 0,
+  delta: 0,
+  gamma: 0,
+  instrumentName,
+  bidText: formatCurrency(0),
+  askText: formatCurrency(0),
+  lastText: formatCurrency(0),
+  changeText: formatSignedCurrency(0),
+  ivText: `${formatPercent(0)}%`,
+  volumeText: formatNumber(0),
+  openInterestText: formatNumber(0),
+  deltaText: '0.000',
+  gammaText: '0.000'
+});
+
+const createEmptyRow = (strike: number, underlying: number): OptionRow => {
+  const row = createRow(strike, underlying);
+  row.call.instrumentName = null;
+  row.put.instrumentName = null;
+  return row;
+};
+
+const createEmptySummary = (maturity: string, label: string): OptionChainSummary => {
+  const now = Date.now();
+  return {
+    maturity,
+    maturityLabel: label,
+    underlying: 0,
+    underlyingText: formatCurrency(0),
+    callVolume: 0,
+    callVolumeText: '0',
+    putVolume: 0,
+    putVolumeText: '0',
+    callOpenInterest: 0,
+    callOpenInterestText: '0',
+    putOpenInterest: 0,
+    putOpenInterestText: '0',
+    atmIV: 0,
+    atmIVText: '0.00%',
+    skew: 0,
+    skewText: '0.00%',
+    updatedAt: now,
+    lastUpdatedText: TIME_FORMATTER.format(now)
+  };
+};
+
 const createQuote = (strike: number, underlying: number, isCall: boolean): OptionQuote => {
   const intrinsic = Math.max(isCall ? underlying - strike : strike - underlying, 0);
   const timeValue = randomFloat(5, 25);
@@ -136,6 +271,7 @@ const createQuote = (strike: number, underlying: number, isCall: boolean): Optio
     openInterest,
     delta,
     gamma,
+    instrumentName: null,
     bidText: formatCurrency(bid),
     askText: formatCurrency(ask),
     lastText: formatCurrency(last),
@@ -170,26 +306,9 @@ const createChain = (maturity: string, label: string, index: number): OptionChai
     rows[i] = createRow(strike, underlying);
   }
 
-  const summary: OptionChainSummary = {
-    maturity,
-    maturityLabel: label,
-    underlying,
-    underlyingText: formatCurrency(underlying),
-    callVolume: 0,
-    callVolumeText: '0',
-    putVolume: 0,
-    putVolumeText: '0',
-    callOpenInterest: 0,
-    callOpenInterestText: '0',
-    putOpenInterest: 0,
-    putOpenInterestText: '0',
-    atmIV: 0,
-    atmIVText: '0.00%',
-    skew: 0,
-    skewText: '0.00%',
-    updatedAt: Date.now(),
-    lastUpdatedText: TIME_FORMATTER.format(Date.now())
-  };
+  const summary = createEmptySummary(maturity, label);
+  summary.underlying = underlying;
+  summary.underlyingText = formatCurrency(underlying);
 
   return { maturity, label, rows, summary };
 };
@@ -222,6 +341,116 @@ const updateQuote = (
   quote.openInterestText = formatNumber(quote.openInterest);
   quote.deltaText = quote.delta.toFixed(3);
   quote.gammaText = quote.gamma.toFixed(3);
+};
+
+const applyTickerToQuote = (quote: OptionQuote, ticker: DeribitTickerData): void => {
+  if (!ticker) {
+    return;
+  }
+
+  quote.instrumentName = ticker.instrument_name ?? quote.instrumentName;
+
+  if (ticker.best_bid_price !== undefined) {
+    quote.bid = ticker.best_bid_price;
+  }
+  if (ticker.best_ask_price !== undefined) {
+    quote.ask = ticker.best_ask_price;
+  }
+
+  const lastPrice = ticker.last_price ?? ticker.mark_price;
+  if (lastPrice !== undefined) {
+    quote.last = lastPrice;
+  }
+
+  if (ticker.stats?.price_change !== undefined) {
+    quote.change = ticker.stats.price_change;
+  }
+
+  if (ticker.iv !== undefined) {
+    quote.iv = ticker.iv;
+  }
+
+  if (ticker.stats?.volume !== undefined) {
+    quote.volume = ticker.stats.volume;
+  }
+
+  if (ticker.open_interest !== undefined) {
+    quote.openInterest = ticker.open_interest;
+  }
+
+  const delta = ticker.delta ?? ticker.greeks?.delta;
+  if (delta !== undefined) {
+    quote.delta = delta;
+  }
+
+  const gamma = ticker.gamma ?? ticker.greeks?.gamma;
+  if (gamma !== undefined) {
+    quote.gamma = gamma;
+  }
+
+  quote.bidText = formatCurrency(quote.bid);
+  quote.askText = formatCurrency(quote.ask);
+  quote.lastText = formatCurrency(quote.last);
+  quote.changeText = formatSignedCurrency(quote.change);
+  quote.ivText = `${formatPercent(quote.iv * 100)}%`;
+  quote.volumeText = formatNumber(quote.volume);
+  quote.openInterestText = formatNumber(quote.openInterest);
+  quote.deltaText = quote.delta.toFixed(3);
+  quote.gammaText = quote.gamma.toFixed(3);
+};
+
+const recalcChainSummary = (chain: OptionChain, underlyingOverride?: number): void => {
+  if (underlyingOverride !== undefined) {
+    chain.summary.underlying = underlyingOverride;
+  }
+
+  const underlying = chain.summary.underlying;
+  let callVolume = 0;
+  let putVolume = 0;
+  let callOI = 0;
+  let putOI = 0;
+  let closestIv = chain.summary.atmIV;
+  let closestDiff = Number.POSITIVE_INFINITY;
+
+  chain.rows.forEach((row) => {
+    callVolume += row.call.volume;
+    putVolume += row.put.volume;
+    callOI += row.call.openInterest;
+    putOI += row.put.openInterest;
+
+    if (underlying > 0) {
+      const diff = Math.abs(row.strike - underlying);
+      if (diff <= closestDiff) {
+        closestDiff = diff;
+        closestIv = (row.call.iv + row.put.iv) / 2;
+      }
+    }
+  });
+
+  chain.summary.callVolume = callVolume;
+  chain.summary.callVolumeText = formatNumber(callVolume);
+  chain.summary.putVolume = putVolume;
+  chain.summary.putVolumeText = formatNumber(putVolume);
+  chain.summary.callOpenInterest = callOI;
+  chain.summary.callOpenInterestText = formatNumber(callOI);
+  chain.summary.putOpenInterest = putOI;
+  chain.summary.putOpenInterestText = formatNumber(putOI);
+
+  if (underlying > 0 && closestDiff !== Number.POSITIVE_INFINITY) {
+    chain.summary.atmIV = closestIv;
+  }
+  chain.summary.atmIVText = `${formatPercent(chain.summary.atmIV * 100)}%`;
+
+  const totalVolume = callVolume + putVolume;
+  const skew = totalVolume === 0 ? 0 : ((callVolume - putVolume) / totalVolume) * 100;
+  chain.summary.skew = skew;
+  chain.summary.skewText = `${skew >= 0 ? '+' : ''}${formatPercent(skew)}%`;
+
+  chain.summary.underlyingText = formatCurrency(chain.summary.underlying);
+
+  const now = Date.now();
+  chain.summary.updatedAt = now;
+  chain.summary.lastUpdatedText = TIME_FORMATTER.format(now);
 };
 
 const updateChain = (chain: OptionChain): void => {
@@ -286,6 +515,68 @@ export const createOptionDataBuffers = (): OptionDataBuffers => {
   return { maturities, chains };
 };
 
+export const createOptionDataBuffersFromInstruments = (
+  instruments: DeribitInstrument[]
+): OptionDataBuffers => {
+  const maturityMap = new Map<
+    string,
+    { chain: OptionChain; rowsByStrike: Map<number, OptionRow> }
+  >();
+
+  instruments.forEach((instrument) => {
+    if (instrument.kind !== 'option') {
+      return;
+    }
+    const maturityId = toMaturityIdFromTimestamp(instrument.expiration_timestamp);
+    const label = toLabel(maturityId);
+    let entry = maturityMap.get(maturityId);
+    if (!entry) {
+      const summary = createEmptySummary(maturityId, label);
+      summary.underlying = instrument.strike;
+      summary.underlyingText = formatCurrency(instrument.strike);
+      entry = {
+        chain: {
+          maturity: maturityId,
+          label,
+          rows: [],
+          summary
+        },
+        rowsByStrike: new Map<number, OptionRow>()
+      };
+      maturityMap.set(maturityId, entry);
+    } else if (entry.chain.summary.underlying === 0) {
+      entry.chain.summary.underlying = instrument.strike;
+      entry.chain.summary.underlyingText = formatCurrency(instrument.strike);
+    }
+
+    const underlying = entry.chain.summary.underlying || instrument.strike;
+    let row = entry.rowsByStrike.get(instrument.strike);
+    if (!row) {
+      row = createEmptyRow(instrument.strike, underlying);
+      entry.rowsByStrike.set(instrument.strike, row);
+      entry.chain.rows.push(row);
+    }
+
+    const targetQuote = instrument.option_type === 'call' ? row.call : row.put;
+    targetQuote.instrumentName = instrument.instrument_name;
+  });
+
+  const sortedMaturities = Array.from(maturityMap.keys()).sort();
+  const maturities: MaturityInfo[] = sortedMaturities.map((id) => {
+    const entry = maturityMap.get(id)!;
+    return { id, label: entry.chain.label };
+  });
+
+  const chains: Record<string, OptionChain> = {};
+  sortedMaturities.forEach((id) => {
+    const entry = maturityMap.get(id)!;
+    entry.chain.rows.sort((a, b) => a.strike - b.strike);
+    chains[id] = entry.chain;
+  });
+
+  return { maturities, chains };
+};
+
 const cloneQuote = (quote: OptionQuote): OptionQuote => ({ ...quote });
 
 const cloneRow = (row: OptionRow): OptionRow => ({
@@ -315,4 +606,40 @@ export const mutateOptionData = (buffers: OptionDataBuffers): void => {
   for (const chain of Object.values(buffers.chains)) {
     updateChain(chain);
   }
+};
+
+export const updateChainsWithTicker = (
+  chains: Record<string, OptionChain>,
+  ticker: DeribitTickerData
+): string | null => {
+  if (!ticker || !ticker.instrument_name) {
+    return null;
+  }
+
+  const parsed = parseDeribitInstrumentName(ticker.instrument_name);
+  if (!parsed) {
+    return null;
+  }
+
+  const chain = chains[parsed.maturityId];
+  if (!chain) {
+    return null;
+  }
+
+  let row = chain.rows.find((item) => item.strike === parsed.strike);
+  if (!row) {
+    row = createEmptyRow(parsed.strike, ticker.underlying_price ?? chain.summary.underlying ?? parsed.strike);
+
+    chain.rows.push(row);
+    chain.rows.sort((a, b) => a.strike - b.strike);
+  }
+
+  const quote = parsed.optionType === 'call' ? row.call : row.put;
+  applyTickerToQuote(quote, ticker);
+  row.strikeText = formatCurrency(row.strike);
+  row.updatedAt = Date.now();
+
+  recalcChainSummary(chain, ticker.underlying_price);
+
+  return chain.maturity;
 };

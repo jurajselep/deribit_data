@@ -3,11 +3,63 @@
     <div class="app__header-left">
       <h1>Digital Options Chain</h1>
 
+      <div class="app__selectors">
+        <label class="app__selector">
+          <span>Currency</span>
+          <select [value]="selectedCurrency()" (change)="changeCurrency($any($event.target).value)">
+            <option *ngFor="let currency of currencies" [value]="currency.value">
+              {{ currency.label }}
+            </option>
+          </select>
+        </label>
+        <label class="app__selector">
+          <span>Instrument</span>
+          <select
+            [value]="selectedInstrument() ?? ''"
+            (change)="changeInstrument($any($event.target).value)"
+          >
+            <option value="" disabled>Select instrument</option>
+            <option *ngFor="let instrument of instruments()" [value]="instrument.instrument_name">
+              {{ instrument.instrument_name }}
+            </option>
+          </select>
+        </label>
+      </div>
+      <div class="app__selector-status" *ngIf="instrumentsLoading()">Loading instruments…</div>
+      <div class="app__selector-status app__selector-status--error" *ngIf="instrumentsError()">
+        {{ instrumentsError() }}
+      </div>
+      <div class="app__selector-status" *ngIf="instrumentSummaryLoading()">Loading instrument data…</div>
+      <div class="app__selector-status app__selector-status--error" *ngIf="instrumentSummaryError()">
+        {{ instrumentSummaryError() }}
+      </div>
+
       <ng-container *ngIf="selectedChain() as chain; else placeholderMeta">
         <p class="app__meta">
           Underlying {{ chain.summary.underlyingText }} · ATM IV {{ chain.summary.atmIVText }} · Skew
           {{ chain.summary.skewText }}
         </p>
+
+        <div class="app__instrument-summary" *ngIf="instrumentSummary() as summary">
+          <div class="app__summary-card">
+            <span class="app__summary-label">Mark Price</span>
+            <span class="app__summary-value">{{ summary.mark_price | number: '1.2-2' }}</span>
+          </div>
+          <div class="app__summary-card">
+            <span class="app__summary-label">24h Volume</span>
+            <span class="app__summary-value">{{ summary.volume | number: '1.0-0' }}</span>
+          </div>
+          <div class="app__summary-card">
+            <span class="app__summary-label">Open Interest</span>
+            <span class="app__summary-value">{{ summary.open_interest | number: '1.0-0' }}</span>
+          </div>
+          <div class="app__summary-card">
+            <span class="app__summary-label">IV</span>
+            <span class="app__summary-value">
+              {{ (summary.implied_volatility ?? 0) * 100 | number: '1.2-2' }}%
+            </span>
+          </div>
+        </div>
 
         <div class="app__smile" role="img" aria-label="volatility smile chart">
           <svg viewBox="0 0 600 160" preserveAspectRatio="none">
@@ -53,23 +105,23 @@
             <span class="app__summary-value">{{ chain.summary.putOpenInterestText }}</span>
           </div>
         </div>
+
+        <div class="app__maturities" role="tablist">
+          <button
+            *ngFor="let maturity of maturities()"
+            type="button"
+            role="tab"
+            class="app__maturity"
+            [class.app__maturity--active]="maturity.id === selectedMaturity()"
+            (click)="selectMaturity(maturity.id)"
+          >
+            {{ maturity.label }}
+          </button>
+        </div>
       </ng-container>
       <ng-template #placeholderMeta>
         <p class="app__meta app__meta--empty">Awaiting market data…</p>
       </ng-template>
-
-      <div class="app__maturities" role="tablist">
-        <button
-          *ngFor="let maturity of maturities()"
-          type="button"
-          role="tab"
-          class="app__maturity"
-          [class.app__maturity--active]="maturity.id === selectedMaturity()"
-          (click)="selectMaturity(maturity.id)"
-        >
-          {{ maturity.label }}
-        </button>
-      </div>
 
       <div class="app__history">
         <span class="app__metric-label">Recent updates (ms)</span>

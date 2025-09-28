@@ -36,6 +36,71 @@
   gap: 1.6rem;
 }
 
+.app__selectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.app__selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(224, 228, 236, 0.75);
+}
+
+.app__selector select {
+  appearance: none;
+  outline: none;
+  background: linear-gradient(135deg, rgba(20, 24, 33, 0.95), rgba(13, 16, 24, 0.92));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.5rem 2.5rem 0.5rem 1.15rem;
+  color: #f1f2f7;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  position: relative;
+}
+
+.app__selector select:hover {
+  background: linear-gradient(135deg, rgba(28, 33, 44, 0.95), rgba(18, 21, 30, 0.95));
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.app__selector select:focus-visible {
+  border-color: rgba(118, 220, 178, 0.55);
+  box-shadow: 0 0 0 2px rgba(118, 220, 178, 0.25);
+}
+
+.app__selector select::-ms-expand {
+  display: none;
+}
+
+.app__selector select {
+  background-image:
+    radial-gradient(circle at 100% 50%, rgba(118, 220, 178, 0.5), rgba(118, 220, 178, 0) 60%),
+    linear-gradient(135deg, rgba(20, 24, 33, 0.95), rgba(13, 16, 24, 0.92));
+  background-repeat: no-repeat;
+  background-size: 0.75rem 0.75rem, 100% 100%;
+  background-position: calc(100% - 1.1rem) 50%, 0 0;
+}
+
+.app__selector-status {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  color: rgba(218, 224, 235, 0.7);
+}
+
+.app__selector-status--error {
+  color: #ff9b68;
+}
+
 h1 {
   margin: 0;
   font-size: 1.45rem;
@@ -112,6 +177,12 @@ h1 {
 .app__summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+}
+
+.app__instrument-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1rem;
 }
 
