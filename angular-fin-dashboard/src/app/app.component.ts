@@ -1,5 +1,16 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, signal } from '@angular/core';
-import { DecimalPipe, NgClass, NgFor, NgIf } from '@angular/common';
+import {
+  AfterViewInit,
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  OnDestroy,
+  OnInit,
+  ViewChild,
+  computed,
+  signal
+} from '@angular/core';
+import { NgClass, NgFor, NgIf } from '@angular/common';
+import * as THREE from 'three';
 import { Store } from '@ngrx/store';
 import { dashboardFrameUpdate, dashboardSelectMaturity } from './state/dashboard.actions';
 import { DASHBOARD_FEATURE_KEY, DashboardState } from './state/dashboard.reducer';
@@ -29,12 +40,30 @@ type FrameMeasurement = {
 type AppState = { [DASHBOARD_FEATURE_KEY]: DashboardState };
 
 type SmilePoint = { x: number; y: number; strike: number; iv: number };
-type SmileAxis = { minStrike: string; maxStrike: string };
+type SmileSeries = {
+  maturity: string;
+  label: string;
+  color: string;
+  points: SmilePoint[];
+  path: string;
+  isSelected: boolean;
+};
+type SmileAxis = { minStrike: string; maxStrike: string; minIv: string; maxIv: string };
+type VolSurfaceSeries = {
+  strikes: number[];
+  strikeLabels: string[];
+  maturityLabels: string[];
+  values: (number | null)[][];
+  minIv: number;
+  maxIv: number;
+  pointCount: number;
+};
 
 const FRAME_TARGET_MS = 16.67;
 const MIN_SAMPLES_FOR_ASSESSMENT = 90;
 
 const SYNTHETIC_CURRENCY = 'SYNTH';
+const SMILE_COLORS = ['#76dcb2', '#82a3f2', '#fcbf49', '#f472b6', '#38bdf8', '#f97316'];
 
 type CurrencyOption = {
   value: string;
@@ -49,17 +78,23 @@ const now = (): number =>
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [NgClass, NgFor, NgIf, DecimalPipe],
+  imports: [NgClass, NgFor, NgIf],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class AppComponent implements OnInit, OnDestroy {
+export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   private optionBuffers: OptionDataBuffers = createOptionDataBuffers();
   private frameStatsRef: FrameStats = createInitialStats();
   private tickerUnsubscribe: (() => void) | null = null;
   private currentTickerInstrument: string | null = null;
   private readonly chainTickerSubscriptions = new Map<string, () => void>();
+  private volSurfaceData: VolSurfaceSeries | null = null;
+  private surfaceScene: THREE.Scene | null = null;
+  private surfaceCamera: THREE.PerspectiveCamera | null = null;
+  private surfaceRenderer: THREE.WebGLRenderer | null = null;
+  private surfaceMesh: THREE.Mesh | null = null;
+  private surfaceAnimationFrame?: number;
 
   readonly currencies: CurrencyOption[] = [
     { value: 'BTC', label: 'BTC' },
@@ -89,13 +124,20 @@ export class AppComponent implements OnInit, OnDestroy {
   });
   readonly frameStats = signal<FrameStats>(this.frameStatsRef, { equal: () => false });
   readonly frameStatsView = computed(() => this.frameStats());
-  readonly smilePoints = signal<SmilePoint[]>([], { equal: () => false });
-  readonly smileAxis = signal<SmileAxis>({ minStrike: '', maxStrike: '' });
-  readonly smilePath = computed(() => {
-    const points = this.smilePoints();
-    return points.length ? points.map((p) => `${p.x},${p.y}`).join(' ') : '';
-  });
+  readonly smileSeries = signal<SmileSeries[]>([], { equal: () => false });
+  readonly smileAxis = signal<SmileAxis>({ minStrike: '', maxStrike: '', minIv: '', maxIv: '' });
+  readonly volSurface = signal<VolSurfaceSeries | null>(null, { equal: () => false });
   readonly loopRunning = signal(false);
+
+  private volSurfaceCanvasRef?: ElementRef<HTMLCanvasElement>;
+
+  @ViewChild('volSurfaceCanvas')
+  set volSurfaceCanvas(element: ElementRef<HTMLCanvasElement> | undefined) {
+    if (element) {
+      this.volSurfaceCanvasRef = element;
+      queueMicrotask(() => this.initVolSurface());
+    }
+  }
 
   private frameId?: number;
   private lastFrameTime = now();
@@ -117,10 +159,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.scheduleNextFrame();
   }
 
+  ngAfterViewInit(): void {
+    this.initVolSurface();
+  }
+
   ngOnDestroy(): void {
     this.stopLoop();
     this.unsubscribeFromTicker();
     this.clearChainTickerSubscriptions();
+    this.disposeVolSurface();
   }
 
   startLoop(): void {
@@ -172,10 +219,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.selectedMaturity.set(maturity);
     this.store.dispatch(dashboardSelectMaturity({ maturity }));
 
-    const currentChain = this.chains()[maturity] ?? null;
-    const smileData = this.buildSmileData(currentChain);
-    this.smilePoints.set(smileData.points);
-    this.smileAxis.set(smileData.axis);
+    this.recomputeSmile(this.chains());
     this.onMaturityChanged(maturity);
   }
 
@@ -244,12 +288,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const signalDuration = performance.now() - signalStart;
 
     const smileStart = performance.now();
-    const currentChain = nextChains[this.selectedMaturity()] ?? null;
-    const smileData = this.buildSmileData(currentChain);
+    this.recomputeSmile(nextChains);
     const smileDuration = performance.now() - smileStart;
-
-    this.smilePoints.set(smileData.points);
-    this.smileAxis.set(smileData.axis);
 
     stats.lastSignalDuration = signalDuration;
     stats.lastSignalDurationText = formatDuration(signalDuration);
@@ -345,9 +385,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const nextChains = cloneChains(this.optionBuffers.chains);
     const statsForStore: FrameStats = { ...this.frameStatsRef };
     this.chains.set(nextChains);
-    const smileData = this.buildSmileData(nextChains[this.selectedMaturity()] ?? null);
-    this.smilePoints.set(smileData.points);
-    this.smileAxis.set(smileData.axis);
+    this.recomputeSmile(nextChains);
     this.store.dispatch(dashboardFrameUpdate({ chains: nextChains, stats: statsForStore }));
     const maturity = this.selectedMaturity();
     if (maturity) {
@@ -432,10 +470,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     const chains = this.chains();
-    const currentChain = chains[maturity] ?? null;
-    const smileData = this.buildSmileData(currentChain);
-    this.smilePoints.set(smileData.points);
-    this.smileAxis.set(smileData.axis);
+    this.recomputeSmile(chains);
     this.onMaturityChanged(maturity);
 
     if (this.isSyntheticCurrency(this.selectedCurrency())) {
@@ -467,52 +502,408 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  private buildSmileData(chain: OptionChain | null): { points: SmilePoint[]; axis: SmileAxis } {
-    if (!chain || chain.rows.length === 0) {
-      return { points: [], axis: { minStrike: '', maxStrike: '' } };
+  private buildSmileData(
+    chains: Record<string, OptionChain>
+  ): { series: SmileSeries[]; axis: SmileAxis; surface: VolSurfaceSeries | null } {
+    const maturities = this.maturities();
+    if (!maturities.length) {
+      return {
+        series: [],
+        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '' },
+        surface: null
+      };
     }
 
     let minStrike = Number.POSITIVE_INFINITY;
     let maxStrike = Number.NEGATIVE_INFINITY;
     let minIv = Number.POSITIVE_INFINITY;
     let maxIv = Number.NEGATIVE_INFINITY;
+    let minStrikeText = '';
+    let maxStrikeText = '';
 
-    const ivs: number[] = new Array(chain.rows.length);
+    const strikeMap = new Map<number, string>();
+    const rawSeries: Array<{
+      maturity: { id: string; label: string };
+      rows: Array<{ strike: number; strikeText: string; iv: number }>;
+    }> = [];
 
-    for (let i = 0; i < chain.rows.length; i += 1) {
-      const row = chain.rows[i];
-      const iv = (row.call.iv + row.put.iv) / 2;
-      ivs[i] = iv;
-      if (row.strike < minStrike) minStrike = row.strike;
-      if (row.strike > maxStrike) maxStrike = row.strike;
-      if (iv < minIv) minIv = iv;
-      if (iv > maxIv) maxIv = iv;
+    maturities.forEach((maturity) => {
+      const chain = chains[maturity.id];
+      if (!chain || chain.rows.length === 0) {
+        return;
+      }
+
+      const rows = chain.rows.map((row) => {
+        const iv = (row.call.iv + row.put.iv) / 2;
+        if (row.strike < minStrike) {
+          minStrike = row.strike;
+          minStrikeText = row.strikeText;
+        }
+        if (row.strike > maxStrike) {
+          maxStrike = row.strike;
+          maxStrikeText = row.strikeText;
+        }
+        if (iv < minIv) {
+          minIv = iv;
+        }
+        if (iv > maxIv) {
+          maxIv = iv;
+        }
+        if (!strikeMap.has(row.strike)) {
+          strikeMap.set(row.strike, row.strikeText);
+        }
+        return { strike: row.strike, strikeText: row.strikeText, iv };
+      });
+
+      rawSeries.push({ maturity, rows });
+    });
+
+    if (rawSeries.length === 0) {
+      return {
+        series: [],
+        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '' },
+        surface: null
+      };
     }
 
-    const strikeRange = maxStrike - minStrike || 1;
-    const ivRange = maxIv - minIv || 1;
+    if (!Number.isFinite(minStrike) || !Number.isFinite(maxStrike)) {
+      minStrike = 0;
+      maxStrike = 1;
+    }
+    if (!Number.isFinite(minIv) || !Number.isFinite(maxIv)) {
+      minIv = 0;
+      maxIv = 1;
+    }
+    if (minStrike === maxStrike) {
+      maxStrike = minStrike + 1;
+    }
+    if (minIv === maxIv) {
+      maxIv = minIv + 0.01;
+    }
+
+    const strikeRange = maxStrike - minStrike;
+    const ivRange = maxIv - minIv;
     const width = 600;
     const height = 140;
     const topPadding = 12;
 
-    const points: SmilePoint[] = chain.rows.map((row, idx) => {
-      const x = ((row.strike - minStrike) / strikeRange) * width;
-      const y = height - ((ivs[idx] - minIv) / ivRange) * (height - topPadding) - topPadding;
+    const selectedMaturity = this.selectedMaturity();
+
+    const series: SmileSeries[] = rawSeries.map((entry, index) => {
+      const color = SMILE_COLORS[index % SMILE_COLORS.length];
+      const points: SmilePoint[] = entry.rows.map((row) => {
+        const x = ((row.strike - minStrike) / strikeRange) * width;
+        const y = height - ((row.iv - minIv) / ivRange) * (height - topPadding) - topPadding;
+        return {
+          x: Number(x.toFixed(2)),
+          y: Number(y.toFixed(2)),
+          strike: row.strike,
+          iv: row.iv
+        };
+      });
+
       return {
-        x: Number(x.toFixed(2)),
-        y: Number(y.toFixed(2)),
-        strike: row.strike,
-        iv: ivs[idx]
+        maturity: entry.maturity.id,
+        label: entry.maturity.label,
+        color,
+        points,
+        path: points.map((point) => `${point.x},${point.y}`).join(' '),
+        isSelected: entry.maturity.id === selectedMaturity
       };
     });
 
-    return {
-      points,
-      axis: {
-        minStrike: chain.rows[0]?.strikeText ?? '',
-        maxStrike: chain.rows[chain.rows.length - 1]?.strikeText ?? ''
-      }
+    const firstSeries = rawSeries[0];
+    const firstRow = firstSeries?.rows[0];
+    const lastSeries = rawSeries[rawSeries.length - 1];
+    const lastRow = lastSeries?.rows[lastSeries.rows.length - 1];
+
+    const axis: SmileAxis = {
+      minStrike: minStrikeText || firstRow?.strikeText || '',
+      maxStrike: maxStrikeText || lastRow?.strikeText || '',
+      minIv: this.formatIv(minIv),
+      maxIv: this.formatIv(maxIv)
     };
+
+    const strikeEntries = Array.from(strikeMap.entries()).sort((a, b) => a[0] - b[0]);
+
+    let surface: VolSurfaceSeries | null = null;
+    if (strikeEntries.length >= 2 && rawSeries.length >= 2) {
+      const strikeValues = strikeEntries.map(([strike]) => strike);
+      const strikeLabels = strikeEntries.map(([, label]) => label);
+      const maturityLabels = rawSeries.map((entry) => entry.maturity.label);
+      const values = rawSeries.map((entry) => {
+        const rowMap = new Map(entry.rows.map((row) => [row.strike, row.iv]));
+        return strikeEntries.map(([strike]) => rowMap.get(strike) ?? null);
+      });
+
+      let localMin = Number.POSITIVE_INFINITY;
+      let localMax = Number.NEGATIVE_INFINITY;
+      let pointCount = 0;
+      values.forEach((row) => {
+        row.forEach((value) => {
+          if (value === null || !Number.isFinite(value)) {
+            return;
+          }
+          pointCount += 1;
+          if (value < localMin) localMin = value;
+          if (value > localMax) localMax = value;
+        });
+      });
+
+      if (pointCount > 0) {
+        surface = {
+          strikes: strikeValues,
+          strikeLabels,
+          maturityLabels,
+          values,
+          minIv: localMin,
+          maxIv: localMin === localMax ? localMin + 0.0001 : localMax,
+          pointCount
+        };
+      }
+    }
+
+    return { series, axis, surface };
+  }
+
+  private recomputeSmile(chains: Record<string, OptionChain>): void {
+    const data = this.buildSmileData(chains);
+    this.smileSeries.set(data.series);
+    this.smileAxis.set(data.axis);
+    this.updateVolSurface(data.surface);
+  }
+
+  private formatIv(value: number): string {
+    const pct = value * 100;
+    const digits = Math.abs(pct) >= 10 ? 1 : 2;
+    return `${pct.toFixed(digits)}%`;
+  }
+
+  private gradientColorComponents(
+    iv: number,
+    minIv: number,
+    maxIv: number
+  ): { r: number; g: number; b: number; normalized: number } {
+    if (!Number.isFinite(iv)) {
+      return { r: 40, g: 40, b: 40, normalized: 0 };
+    }
+    const range = maxIv - minIv || 1;
+    const normalized = Math.max(0, Math.min(1, (iv - minIv) / range));
+    const start = { r: 118, g: 220, b: 178 }; // teal
+    const end = { r: 244, g: 114, b: 182 }; // pink
+    return {
+      r: Math.round(start.r + (end.r - start.r) * normalized),
+      g: Math.round(start.g + (end.g - start.g) * normalized),
+      b: Math.round(start.b + (end.b - start.b) * normalized),
+      normalized
+    };
+  }
+
+  private updateVolSurface(surface: VolSurfaceSeries | null): void {
+    this.volSurface.set(surface);
+    this.volSurfaceData = surface;
+    this.updateSurfaceGeometry();
+  }
+
+  private initVolSurface(): void {
+    const canvas = this.volSurfaceCanvasRef?.nativeElement;
+    if (!canvas) {
+      return;
+    }
+
+    const width = canvas.clientWidth || 640;
+    const height = canvas.clientHeight || 320;
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(width, height, false);
+    renderer.setClearColor(0x000000, 0);
+    this.surfaceRenderer = renderer;
+
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+    directional.position.set(6, 10, 6);
+    scene.add(directional);
+    scene.add(new THREE.HemisphereLight(0x6b8fde, 0x0c111b, 0.35));
+
+    const grid = new THREE.GridHelper(14, 7, 0x233044, 0x1a2330);
+    grid.position.y = 0;
+    scene.add(grid);
+    this.surfaceScene = scene;
+
+    const camera = new THREE.PerspectiveCamera(36, width / height, 0.1, 100);
+    camera.position.set(9, 7, 11);
+    camera.lookAt(0, 2, 0);
+    this.surfaceCamera = camera;
+
+    this.updateSurfaceGeometry();
+    this.animateSurface();
+    window.addEventListener('resize', this.handleSurfaceResize, { passive: true });
+  }
+
+  private animateSurface(): void {
+    if (!this.surfaceRenderer || !this.surfaceScene || !this.surfaceCamera) {
+      return;
+    }
+    this.surfaceAnimationFrame = requestAnimationFrame(() => this.animateSurface());
+    if (this.surfaceMesh) {
+      this.surfaceMesh.rotation.y += 0.0035;
+    }
+    this.surfaceRenderer.render(this.surfaceScene, this.surfaceCamera);
+  }
+
+  private updateSurfaceGeometry(): void {
+    if (!this.surfaceScene) {
+      return;
+    }
+
+    if (!this.volSurfaceData) {
+      if (this.surfaceMesh) {
+        this.surfaceScene.remove(this.surfaceMesh);
+        (this.surfaceMesh.geometry as THREE.BufferGeometry).dispose();
+        (this.surfaceMesh.material as THREE.Material).dispose();
+        this.surfaceMesh = null;
+        this.renderSurface();
+      }
+      return;
+    }
+
+    const mesh = this.buildSurfaceMesh(this.volSurfaceData);
+    if (!mesh) {
+      return;
+    }
+
+    if (this.surfaceMesh) {
+      this.surfaceScene.remove(this.surfaceMesh);
+      (this.surfaceMesh.geometry as THREE.BufferGeometry).dispose();
+      (this.surfaceMesh.material as THREE.Material).dispose();
+    }
+
+    this.surfaceMesh = mesh;
+    this.surfaceScene.add(mesh);
+    this.renderSurface();
+  }
+
+  private buildSurfaceMesh(surface: VolSurfaceSeries): THREE.Mesh | null {
+    const rows = surface.values.length;
+    const cols = surface.strikeLabels.length;
+    if (rows < 2 || cols < 2) {
+      return null;
+    }
+
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const color = new THREE.Color();
+
+    const xScale = 12;
+    const zScale = 8;
+    const yScale = 6;
+
+    const strikeSpan = Math.max(cols - 1, 1);
+    const maturitySpan = Math.max(rows - 1, 1);
+    const ivRange = surface.maxIv - surface.minIv || 1;
+
+    const coordX = (col: number) => (col / strikeSpan - 0.5) * xScale;
+    const coordZ = (row: number) => (row / maturitySpan - 0.5) * zScale;
+    const coordY = (iv: number) => ((iv - surface.minIv) / ivRange) * yScale;
+
+    const addVertex = (col: number, row: number, iv: number) => {
+      positions.push(coordX(col), coordY(iv), coordZ(row));
+      const components = this.gradientColorComponents(iv, surface.minIv, surface.maxIv);
+      color.setRGB(components.r / 255, components.g / 255, components.b / 255);
+      colors.push(color.r, color.g, color.b);
+    };
+
+    for (let row = 0; row < rows - 1; row += 1) {
+      for (let col = 0; col < cols - 1; col += 1) {
+        const v00 = surface.values[row]?.[col];
+        const v10 = surface.values[row + 1]?.[col];
+        const v01 = surface.values[row]?.[col + 1];
+        const v11 = surface.values[row + 1]?.[col + 1];
+        if (
+          v00 === null ||
+          v10 === null ||
+          v01 === null ||
+          v11 === null ||
+          !Number.isFinite(v00) ||
+          !Number.isFinite(v10) ||
+          !Number.isFinite(v01) ||
+          !Number.isFinite(v11)
+        ) {
+          continue;
+        }
+
+        addVertex(col, row, v00);
+        addVertex(col, row + 1, v10);
+        addVertex(col + 1, row + 1, v11);
+
+        addVertex(col, row, v00);
+        addVertex(col + 1, row + 1, v11);
+        addVertex(col + 1, row, v01);
+      }
+    }
+
+    if (positions.length === 0) {
+      return null;
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      shininess: 80,
+      transparent: true,
+      opacity: 0.9
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.y = 0.5;
+    return mesh;
+  }
+
+  private renderSurface(): void {
+    if (this.surfaceRenderer && this.surfaceScene && this.surfaceCamera) {
+      this.surfaceRenderer.render(this.surfaceScene, this.surfaceCamera);
+    }
+  }
+
+  private handleSurfaceResize = (): void => {
+    const canvas = this.volSurfaceCanvasRef?.nativeElement;
+    if (!canvas || !this.surfaceRenderer || !this.surfaceCamera) {
+      return;
+    }
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height) {
+      return;
+    }
+    this.surfaceRenderer.setSize(width, height, false);
+    this.surfaceCamera.aspect = width / height;
+    this.surfaceCamera.updateProjectionMatrix();
+    this.renderSurface();
+  };
+
+  private disposeVolSurface(): void {
+    if (this.surfaceAnimationFrame !== undefined) {
+      cancelAnimationFrame(this.surfaceAnimationFrame);
+      this.surfaceAnimationFrame = undefined;
+    }
+    window.removeEventListener('resize', this.handleSurfaceResize);
+    if (this.surfaceMesh) {
+      this.surfaceScene?.remove(this.surfaceMesh);
+      (this.surfaceMesh.geometry as THREE.BufferGeometry).dispose();
+      (this.surfaceMesh.material as THREE.Material).dispose();
+      this.surfaceMesh = null;
+    }
+    this.surfaceRenderer?.dispose();
+    this.surfaceRenderer = null;
+    this.surfaceCamera = null;
+    this.surfaceScene = null;
   }
 
   private parseInstrumentMaturity(instrumentName: string): string | null {
@@ -633,12 +1024,6 @@ export class AppComponent implements OnInit, OnDestroy {
 
     const chainsCopy = cloneChains(this.optionBuffers.chains);
     this.chains.set(chainsCopy);
-
-    if (maturity === this.selectedMaturity()) {
-      const currentChain = chainsCopy[maturity] ?? null;
-      const smileData = this.buildSmileData(currentChain);
-      this.smilePoints.set(smileData.points);
-      this.smileAxis.set(smileData.axis);
-    }
+    this.recomputeSmile(chainsCopy);
   }
 }

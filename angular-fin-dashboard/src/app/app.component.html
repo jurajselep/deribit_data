@@ -53,44 +53,31 @@
           {{ chain.summary.skewText }}
         </p>
 
-        <div class="app__instrument-summary" *ngIf="instrumentSummary() as summary">
-          <div class="app__summary-card">
-            <span class="app__summary-label">Mark Price</span>
-            <span class="app__summary-value">{{ summary.mark_price | number: '1.2-2' }}</span>
-          </div>
-          <div class="app__summary-card">
-            <span class="app__summary-label">24h Volume</span>
-            <span class="app__summary-value">{{ summary.volume | number: '1.0-0' }}</span>
-          </div>
-          <div class="app__summary-card">
-            <span class="app__summary-label">Open Interest</span>
-            <span class="app__summary-value">{{ summary.open_interest | number: '1.0-0' }}</span>
-          </div>
-          <div class="app__summary-card">
-            <span class="app__summary-label">IV</span>
-            <span class="app__summary-value">
-              {{ (summary.implied_volatility ?? 0) * 100 | number: '1.2-2' }}%
-            </span>
-          </div>
-        </div>
-
         <div class="app__smile" role="img" aria-label="volatility smile chart">
+          <div class="app__smile-y-axis">
+            <span>{{ smileAxis().maxIv }}</span>
+            <span class="app__smile-y-label">IV (%)</span>
+            <span>{{ smileAxis().minIv }}</span>
+          </div>
           <svg viewBox="0 0 600 160" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="smileGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stop-color="rgba(118, 220, 178, 0.85)" />
-                <stop offset="100%" stop-color="rgba(130, 163, 242, 0.85)" />
-              </linearGradient>
-            </defs>
-            <polyline
-              [attr.points]="smilePath()"
-              fill="none"
-              stroke="url(#smileGradient)"
-              stroke-width="2.5"
-              stroke-linecap="round"
-            ></polyline>
-            <g *ngFor="let point of smilePoints()">
-              <circle [attr.cx]="point.x" [attr.cy]="point.y" r="3" fill="rgba(236, 240, 255, 0.85)"></circle>
+            <g *ngFor="let series of smileSeries()">
+              <polyline
+                [attr.points]="series.path"
+                fill="none"
+                [attr.stroke]="series.color"
+                [attr.stroke-width]="series.isSelected ? 3.5 : 2"
+                stroke-linecap="round"
+                [attr.opacity]="series.isSelected ? 0.95 : 0.65"
+              ></polyline>
+              <g *ngFor="let point of series.points">
+                <circle
+                  [attr.cx]="point.x"
+                  [attr.cy]="point.y"
+                  [attr.r]="series.isSelected ? 3.5 : 2.5"
+                  [attr.fill]="series.color"
+                  [attr.opacity]="series.isSelected ? 0.9 : 0.5"
+                ></circle>
+              </g>
             </g>
           </svg>
           <div class="app__smile-axis">
@@ -98,26 +85,41 @@
             <span>Strike</span>
             <span>{{ smileAxis().maxStrike }}</span>
           </div>
+          <div class="app__smile-legend" *ngIf="smileSeries().length > 0">
+            <span
+              *ngFor="let series of smileSeries()"
+              class="app__smile-legend-item"
+              [class.app__smile-legend-item--active]="series.isSelected"
+            >
+              <span class="app__smile-legend-swatch" [style.background-color]="series.color"></span>
+              {{ series.label }}
+            </span>
+          </div>
         </div>
 
-        <div class="app__summary-grid">
-          <div class="app__summary-card">
-            <span class="app__summary-label">Call Volume</span>
-            <span class="app__summary-value">{{ chain.summary.callVolumeText }}</span>
+        <div class="app__surface" *ngIf="volSurface() as surface; else surfacePlaceholder">
+          <div class="app__surface-header">
+            <span>Volatility Surface</span>
+            <span>
+              {{ surface.maturityLabels.length }} maturities · {{ surface.strikeLabels.length }} strikes ·
+              {{ surface.pointCount }} pts
+            </span>
           </div>
-          <div class="app__summary-card">
-            <span class="app__summary-label">Put Volume</span>
-            <span class="app__summary-value">{{ chain.summary.putVolumeText }}</span>
+          <div class="app__surface-canvas-wrapper">
+            <canvas #volSurfaceCanvas class="app__surface-canvas"></canvas>
           </div>
-          <div class="app__summary-card">
-            <span class="app__summary-label">Call OI</span>
-            <span class="app__summary-value">{{ chain.summary.callOpenInterestText }}</span>
-          </div>
-          <div class="app__summary-card">
-            <span class="app__summary-label">Put OI</span>
-            <span class="app__summary-value">{{ chain.summary.putOpenInterestText }}</span>
+          <div class="app__surface-axis">
+            <span>Strikes</span>
+            <span>Implied Vol</span>
+            <span>Maturities</span>
           </div>
         </div>
+        <ng-template #surfacePlaceholder>
+          <div class="app__surface app__surface--empty">
+            <span class="app__surface-empty">Insufficient option data to render a volatility surface.</span>
+          </div>
+        </ng-template>
+
       </ng-container>
       <ng-template #placeholderMeta>
         <p class="app__meta app__meta--empty">Awaiting market data…</p>
