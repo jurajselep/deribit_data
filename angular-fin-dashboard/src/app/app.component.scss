@@ -10,13 +10,14 @@
   color-scheme: dark;
 }
 
+
 .app {
-  max-width: 1220px;
+  width: min(100%, 1640px);
   margin: 0 auto;
-  padding: 3.25rem clamp(1.5rem, 4vw, 3.5rem);
+  padding: 3.25rem clamp(1.8rem, 5vw, 4rem);
   display: flex;
   flex-direction: column;
-  gap: 2.25rem;
+  gap: 2.5rem;
 }
 
 .app__header {
@@ -119,6 +120,25 @@ h1 {
   color: rgba(240, 242, 248, 0.45);
 }
 
+.app__volatility-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+@media (min-width: 1024px) {
+  .app__volatility-layout {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 2rem;
+  }
+
+  .app__volatility-layout > .app__smile,
+  .app__volatility-layout > .app__surface {
+    flex: 1 1 0;
+  }
+}
+
 .app__smile {
   position: relative;
   background: rgba(12, 15, 21, 0.85);
@@ -184,11 +204,28 @@ h1 {
   gap: 0.4rem;
   opacity: 0.6;
   transition: opacity 160ms ease;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
 }
 
 .app__smile-legend-item--active {
   opacity: 1;
   color: rgba(225, 229, 239, 0.88);
+}
+
+.app__smile-legend-item--filtered {
+  opacity: 1;
+  color: #ffffff;
+  text-shadow: 0 0 8px rgba(118, 220, 178, 0.4);
+}
+
+.app__smile-legend-item:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
 }
 
 .app__smile-legend-swatch {
@@ -199,12 +236,14 @@ h1 {
 }
 
 .app__surface {
-  margin-top: 1.6rem;
+  margin-top: 0;
   background: rgba(12, 15, 21, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 18px;
   padding: 1.1rem 1.5rem 1.6rem;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
 }
 
 .app__surface--empty {
@@ -312,43 +351,20 @@ h1 {
 }
 
 .app__actions {
-  flex: 1 1 280px;
-  min-width: 240px;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.5rem;
+}
+
+.app__loop-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
 
 .app__timestamp {
   font-size: 0.82rem;
   color: rgba(210, 217, 229, 0.74);
-}
-
-.app__fps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  color: rgba(232, 236, 245, 0.72);
-}
-
-.app__fps strong {
-  font-weight: 600;
-  color: #ffffff;
-}
-
-.app__fps--good {
-  color: #76dcb2;
-}
-
-.app__fps--cold {
-  color: #ff9b68;
-}
-
-.app__buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
 }
 
 button {
@@ -377,6 +393,48 @@ button[disabled] {
 .button--stop {
   color: #ffb3a1;
   border-color: rgba(255, 147, 118, 0.35);
+}
+
+.app__footer {
+  margin-top: 2rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+}
+
+.app__metrics {
+  display: grid;
+  gap: 1.1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.app__metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.app__metric-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(224, 228, 236, 0.6);
+}
+
+.app__metric-value {
+  font-size: 0.86rem;
+  color: rgba(246, 247, 251, 0.82);
+  line-height: 1.4;
+}
+
+.app__metric-value--good {
+  color: rgba(118, 220, 178, 0.85);
+}
+
+.app__metric-value--cold {
+  color: rgba(244, 114, 182, 0.75);
 }
 
 .button--stop:hover:not([disabled]) {

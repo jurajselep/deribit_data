@@ -53,6 +53,7 @@ type VolSurfaceSeries = {
   strikes: number[];
   strikeLabels: string[];
   maturityLabels: string[];
+  maturityTicks: number[];
   values: (number | null)[][];
   minIv: number;
   maxIv: number;
@@ -126,6 +127,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly frameStatsView = computed(() => this.frameStats());
   readonly smileSeries = signal<SmileSeries[]>([], { equal: () => false });
   readonly smileAxis = signal<SmileAxis>({ minStrike: '', maxStrike: '', minIv: '', maxIv: '' });
+  readonly smileFilter = signal<string | null>(null);
   readonly volSurface = signal<VolSurfaceSeries | null>(null, { equal: () => false });
   readonly loopRunning = signal(false);
 
@@ -221,6 +223,11 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
     this.recomputeSmile(this.chains());
     this.onMaturityChanged(maturity);
+  }
+
+  toggleSmileFilter(maturity: string): void {
+    const current = this.smileFilter();
+    this.smileFilter.set(current === maturity ? null : maturity);
   }
 
   trackByStrike = (_: number, row: OptionRow) => row.strike;
@@ -533,8 +540,19 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
         return;
       }
 
-      const rows = chain.rows.map((row) => {
-        const iv = (row.call.iv + row.put.iv) / 2;
+      const finiteRows: Array<{ strike: number; strikeText: string; iv: number }> = [];
+
+      chain.rows.forEach((row) => {
+        const callIv = row.call.iv;
+        const putIv = row.put.iv;
+        const iv = Number.isFinite(callIv) && Number.isFinite(putIv) ? (callIv + putIv) / 2 : Number.NaN;
+        if (!Number.isFinite(iv) || iv <= 0 || iv > 5) {
+          return;
+        }
+
+        const value = iv as number;
+        finiteRows.push({ strike: row.strike, strikeText: row.strikeText, iv: value });
+
         if (row.strike < minStrike) {
           minStrike = row.strike;
           minStrikeText = row.strikeText;
@@ -543,19 +561,21 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
           maxStrike = row.strike;
           maxStrikeText = row.strikeText;
         }
-        if (iv < minIv) {
-          minIv = iv;
+        if (value < minIv) {
+          minIv = value;
         }
-        if (iv > maxIv) {
-          maxIv = iv;
+        if (value > maxIv) {
+          maxIv = value;
         }
         if (!strikeMap.has(row.strike)) {
           strikeMap.set(row.strike, row.strikeText);
         }
-        return { strike: row.strike, strikeText: row.strikeText, iv };
       });
 
-      rawSeries.push({ maturity, rows });
+      if (finiteRows.length >= 2) {
+        finiteRows.sort((a, b) => a.strike - b.strike);
+        rawSeries.push({ maturity, rows: finiteRows });
+      }
     });
 
     if (rawSeries.length === 0) {
@@ -590,8 +610,9 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     const selectedMaturity = this.selectedMaturity();
 
     const series: SmileSeries[] = rawSeries.map((entry, index) => {
+      const validRows = entry.rows;
       const color = SMILE_COLORS[index % SMILE_COLORS.length];
-      const points: SmilePoint[] = entry.rows.map((row) => {
+      const points: SmilePoint[] = validRows.map((row) => {
         const x = ((row.strike - minStrike) / strikeRange) * width;
         const y = height - ((row.iv - minIv) / ivRange) * (height - topPadding) - topPadding;
         return {
@@ -626,15 +647,44 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
     const strikeEntries = Array.from(strikeMap.entries()).sort((a, b) => a[0] - b[0]);
 
+    const sampleIv = (
+      rows: Array<{ strike: number; iv: number }>,
+      strike: number
+    ): number | null => {
+      if (!rows.length) {
+        return null;
+      }
+      const first = rows[0];
+      const last = rows[rows.length - 1];
+      if (strike < first.strike || strike > last.strike) {
+        return null;
+      }
+      for (let i = 0; i < rows.length; i += 1) {
+        const current = rows[i];
+        if (Math.abs(current.strike - strike) < 1e-6) {
+          return current.iv;
+        }
+        if (current.strike > strike) {
+          const prev = rows[i - 1];
+          if (!prev || prev.strike === current.strike) {
+            return current.iv;
+          }
+          const ratio = (strike - prev.strike) / (current.strike - prev.strike);
+          return prev.iv + ratio * (current.iv - prev.iv);
+        }
+      }
+      return last.iv;
+    };
+
     let surface: VolSurfaceSeries | null = null;
     if (strikeEntries.length >= 2 && rawSeries.length >= 2) {
       const strikeValues = strikeEntries.map(([strike]) => strike);
       const strikeLabels = strikeEntries.map(([, label]) => label);
       const maturityLabels = rawSeries.map((entry) => entry.maturity.label);
-      const values = rawSeries.map((entry) => {
-        const rowMap = new Map(entry.rows.map((row) => [row.strike, row.iv]));
-        return strikeEntries.map(([strike]) => rowMap.get(strike) ?? null);
-      });
+      const maturityTicks = rawSeries.map((entry) => Date.parse(`${entry.maturity.id}T00:00:00Z`));
+      const values = rawSeries.map((entry) =>
+        strikeEntries.map(([strike]) => sampleIv(entry.rows, strike) ?? null)
+      );
 
       let localMin = Number.POSITIVE_INFINITY;
       let localMax = Number.NEGATIVE_INFINITY;
@@ -655,6 +705,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
           strikes: strikeValues,
           strikeLabels,
           maturityLabels,
+          maturityTicks,
           values,
           minIv: localMin,
           maxIv: localMin === localMax ? localMin + 0.0001 : localMax,
@@ -671,6 +722,10 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     this.smileSeries.set(data.series);
     this.smileAxis.set(data.axis);
     this.updateVolSurface(data.surface);
+    const filter = this.smileFilter();
+    if (filter && !data.series.some((series) => series.maturity === filter && series.points.length)) {
+      this.smileFilter.set(null);
+    }
   }
 
   private formatIv(value: number): string {
@@ -787,7 +842,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private buildSurfaceMesh(surface: VolSurfaceSeries): THREE.Mesh | null {
     const rows = surface.values.length;
-    const cols = surface.strikeLabels.length;
+    const cols = surface.strikes.length;
     if (rows < 2 || cols < 2) {
       return null;
     }
@@ -796,16 +851,26 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     const colors: number[] = [];
     const color = new THREE.Color();
 
-    const xScale = 12;
-    const zScale = 8;
-    const yScale = 6;
+    const strikes = surface.strikes;
+    const logStrikes = strikes.map((strike) => Math.log(strike));
+    const logMin = Math.min(...logStrikes);
+    const logMax = Math.max(...logStrikes);
+    const logRange = logMax - logMin || 1;
 
-    const strikeSpan = Math.max(cols - 1, 1);
-    const maturitySpan = Math.max(rows - 1, 1);
+    const ticks = surface.maturityTicks;
+    const hasValidTicks = ticks.every((value) => Number.isFinite(value));
+    const tickValues = hasValidTicks ? ticks : ticks.map((_, index) => index);
+    const tickMin = Math.min(...tickValues);
+    const tickMax = Math.max(...tickValues);
+    const tickRange = tickMax - tickMin || 1;
+
+    const xScale = 14;
+    const zScale = 10;
+    const yScale = 7;
     const ivRange = surface.maxIv - surface.minIv || 1;
 
-    const coordX = (col: number) => (col / strikeSpan - 0.5) * xScale;
-    const coordZ = (row: number) => (row / maturitySpan - 0.5) * zScale;
+    const coordX = (col: number) => ((logStrikes[col] - logMin) / logRange - 0.5) * xScale;
+    const coordZ = (row: number) => ((tickValues[row] - tickMin) / tickRange - 0.5) * zScale;
     const coordY = (iv: number) => ((iv - surface.minIv) / ivRange) * yScale;
 
     const addVertex = (col: number, row: number, iv: number) => {

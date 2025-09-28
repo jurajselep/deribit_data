@@ -53,32 +53,35 @@
           {{ chain.summary.skewText }}
         </p>
 
-        <div class="app__smile" role="img" aria-label="volatility smile chart">
-          <div class="app__smile-y-axis">
-            <span>{{ smileAxis().maxIv }}</span>
-            <span class="app__smile-y-label">IV (%)</span>
-            <span>{{ smileAxis().minIv }}</span>
-          </div>
+        <div class="app__volatility-layout">
+          <div class="app__smile" role="img" aria-label="volatility smile chart">
+            <div class="app__smile-y-axis">
+              <span>{{ smileAxis().maxIv }}</span>
+              <span class="app__smile-y-label">IV (%)</span>
+              <span>{{ smileAxis().minIv }}</span>
+            </div>
           <svg viewBox="0 0 600 160" preserveAspectRatio="none">
-            <g *ngFor="let series of smileSeries()">
-              <polyline
-                [attr.points]="series.path"
-                fill="none"
-                [attr.stroke]="series.color"
-                [attr.stroke-width]="series.isSelected ? 3.5 : 2"
-                stroke-linecap="round"
-                [attr.opacity]="series.isSelected ? 0.95 : 0.65"
-              ></polyline>
-              <g *ngFor="let point of series.points">
-                <circle
-                  [attr.cx]="point.x"
-                  [attr.cy]="point.y"
-                  [attr.r]="series.isSelected ? 3.5 : 2.5"
-                  [attr.fill]="series.color"
-                  [attr.opacity]="series.isSelected ? 0.9 : 0.5"
-                ></circle>
+            <ng-container *ngFor="let series of smileSeries()">
+              <g *ngIf="series.points.length > 0 && (!smileFilter() || smileFilter() === series.maturity)">
+                <polyline
+                  [attr.points]="series.path"
+                  fill="none"
+                  [attr.stroke]="series.color"
+                  [attr.stroke-width]="smileFilter() ? 3.5 : series.isSelected ? 3.5 : 2"
+                  stroke-linecap="round"
+                  [attr.opacity]="smileFilter() ? 0.95 : series.isSelected ? 0.95 : 0.65"
+                ></polyline>
+                <g *ngFor="let point of series.points">
+                  <circle
+                    [attr.cx]="point.x"
+                    [attr.cy]="point.y"
+                    [attr.r]="smileFilter() ? 3.5 : series.isSelected ? 3.5 : 2.5"
+                    [attr.fill]="series.color"
+                    [attr.opacity]="smileFilter() ? 0.95 : series.isSelected ? 0.9 : 0.5"
+                  ></circle>
+                </g>
               </g>
-            </g>
+            </ng-container>
           </svg>
           <div class="app__smile-axis">
             <span>{{ smileAxis().minStrike }}</span>
@@ -86,32 +89,38 @@
             <span>{{ smileAxis().maxStrike }}</span>
           </div>
           <div class="app__smile-legend" *ngIf="smileSeries().length > 0">
-            <span
+            <button
+              type="button"
               *ngFor="let series of smileSeries()"
               class="app__smile-legend-item"
               [class.app__smile-legend-item--active]="series.isSelected"
+              [class.app__smile-legend-item--filtered]="smileFilter() === series.maturity"
+              [disabled]="series.points.length === 0"
+              [attr.aria-pressed]="smileFilter() === series.maturity"
+              (click)="toggleSmileFilter(series.maturity)"
             >
               <span class="app__smile-legend-swatch" [style.background-color]="series.color"></span>
               {{ series.label }}
-            </span>
+            </button>
           </div>
-        </div>
+          </div>
 
-        <div class="app__surface" *ngIf="volSurface() as surface; else surfacePlaceholder">
-          <div class="app__surface-header">
-            <span>Volatility Surface</span>
-            <span>
-              {{ surface.maturityLabels.length }} maturities · {{ surface.strikeLabels.length }} strikes ·
-              {{ surface.pointCount }} pts
-            </span>
-          </div>
-          <div class="app__surface-canvas-wrapper">
-            <canvas #volSurfaceCanvas class="app__surface-canvas"></canvas>
-          </div>
-          <div class="app__surface-axis">
-            <span>Strikes</span>
-            <span>Implied Vol</span>
-            <span>Maturities</span>
+          <div class="app__surface" *ngIf="volSurface() as surface; else surfacePlaceholder">
+            <div class="app__surface-header">
+              <span>Volatility Surface</span>
+              <span>
+                {{ surface.maturityLabels.length }} maturities · {{ surface.strikeLabels.length }} strikes ·
+                {{ surface.pointCount }} pts
+              </span>
+            </div>
+            <div class="app__surface-canvas-wrapper">
+              <canvas #volSurfaceCanvas class="app__surface-canvas"></canvas>
+            </div>
+            <div class="app__surface-axis">
+              <span>Strikes</span>
+              <span>Implied Vol</span>
+              <span>Maturities</span>
+            </div>
           </div>
         </div>
         <ng-template #surfacePlaceholder>
@@ -139,27 +148,6 @@
         <ng-container *ngIf="selectedChain() as chain; else dash">{{ chain.summary.lastUpdatedText }}</ng-container>
         <ng-template #dash>--:--:--</ng-template>
       </span>
-      <span class="app__fps">
-        Frame spacing: {{ frameStatsView().lastFrameSpacingText }} ms · {{ frameStatsView().instantFpsText }} fps
-      </span>
-      <span class="app__fps">
-        Perf: {{ frameStatsView().lastDurationText }} ms total · smile {{ frameStatsView().lastSmileDurationText }} ms · data
-        {{ frameStatsView().lastDataDurationText }} ms · signals {{ frameStatsView().lastSignalDurationText }} ms · stats
-        {{ frameStatsView().lastStatsDurationText }} ms
-      </span>
-      <span
-        class="app__fps"
-        [class.app__fps--good]="frameStatsView().meets60"
-        [class.app__fps--cold]="!frameStatsView().meets60 && frameStatsView().sampleCount >= 10"
-      >
-        Avg update {{ frameStatsView().averageDurationText }} ms · 60 fps ready?
-        <strong>{{ frameStatsView().statusText }}</strong>
-      </span>
-      <div class="app__buttons">
-        <button type="button" (click)="startLoop()" [disabled]="loopRunning()">Start loop</button>
-        <button type="button" class="button--stop" (click)="stopLoop()" [disabled]="!loopRunning()">Stop loop</button>
-        <button type="button" (click)="refreshOnce()">Refresh snapshot</button>
-      </div>
     </div>
   </header>
 
@@ -206,4 +194,37 @@
       <div class="app__empty">No option data available.</div>
     </ng-template>
   </section>
+
+  <footer class="app__footer">
+    <div class="app__loop-controls">
+      <button type="button" (click)="startLoop()" [disabled]="loopRunning()">Start loop</button>
+      <button type="button" class="button--stop" (click)="stopLoop()" [disabled]="!loopRunning()">Stop loop</button>
+      <button type="button" (click)="refreshOnce()">Refresh snapshot</button>
+    </div>
+    <div class="app__metrics">
+      <div class="app__metric">
+        <span class="app__metric-label">Frame spacing</span>
+        <span class="app__metric-value">{{ frameStatsView().lastFrameSpacingText }} · {{ frameStatsView().instantFpsText }}</span>
+      </div>
+      <div class="app__metric">
+        <span class="app__metric-label">Perf</span>
+        <span class="app__metric-value">
+          {{ frameStatsView().lastDurationText }} total · smile {{ frameStatsView().lastSmileDurationText }} · data
+          {{ frameStatsView().lastDataDurationText }} · signals {{ frameStatsView().lastSignalDurationText }} · stats
+          {{ frameStatsView().lastStatsDurationText }}
+        </span>
+      </div>
+      <div class="app__metric app__metric--status">
+        <span class="app__metric-label">Avg update</span>
+        <span
+          class="app__metric-value"
+          [class.app__metric-value--good]="frameStatsView().meets60"
+          [class.app__metric-value--cold]="!frameStatsView().meets60 && frameStatsView().sampleCount >= 10"
+        >
+          {{ frameStatsView().averageDurationText }} · 60 fps?
+          <strong>{{ frameStatsView().statusText }}</strong>
+        </span>
+      </div>
+    </div>
+  </footer>
 </main>
