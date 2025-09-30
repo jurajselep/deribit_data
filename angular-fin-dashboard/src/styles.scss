@@ -1,1 +1,146 @@
 /* You can add global styles to this file, and also import other style files */
+
+
+.app__surface-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.app__surface-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.app__surface-mode-button {
+  padding: 0.28rem 0.9rem;
+  font-size: 0.66rem;
+}
+
+.app__surface-mode-button--active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+.app__surface-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(47, 44, 41, 0.45);
+}
+
+.app__surface-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.app__surface-controls-row--settings {
+  justify-content: space-between;
+}
+
+.app__surface-controls-row--timeline {
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+}
+
+.app__surface-interval {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.app__surface-interval select {
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  padding: 0.28rem 0.8rem;
+  font-size: 0.76rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--color-text);
+}
+
+.app__surface-refresh {
+  padding: 0.32rem 1rem;
+  font-size: 0.66rem;
+}
+
+.app__surface-step {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.app__surface-timeline {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.1rem;
+  overflow-x: auto;
+}
+
+.app__surface-timeline-point {
+  padding: 0.32rem 0.8rem;
+  min-width: 3.2rem;
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.app__surface-timeline-point--active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(123, 157, 138, 0.28);
+}
+
+.app__surface-status {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(47, 44, 41, 0.45);
+}
+
+.app__surface-status--error {
+  color: var(--color-negative);
+}
+
+.app__volatility-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin-bottom: 1rem;
+}
+
+.app__volatility-controls-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(47, 44, 41, 0.52);
+}
+
+.app__volatility-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1rem;
+}

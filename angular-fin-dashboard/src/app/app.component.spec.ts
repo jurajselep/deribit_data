@@ -11,7 +11,11 @@ import { FrameStats } from './models/frame-stats';
 describe('AppComponent', () => {
   let fixture: ComponentFixture<AppComponent>;
   let component: AppComponent;
-  let mockDeribitService: { fetchInstruments: jasmine.Spy; fetchInstrumentSummary: jasmine.Spy };
+  let mockDeribitService: {
+    fetchInstruments: jasmine.Spy;
+    fetchInstrumentSummary: jasmine.Spy;
+    fetchBookSummaries: jasmine.Spy;
+  };
   let mockWebsocketService: { subscribeTicker: jasmine.Spy };
   let tickerHandlers: Map<string, Array<(data: DeribitTickerData) => void>>;
 
@@ -38,6 +42,18 @@ describe('AppComponent', () => {
     const callback = nextFrameCallback;
     nextFrameCallback = null;
     callback(virtualTimestamp);
+  };
+
+  const waitForCondition = async (predicate: () => boolean, attempts = 10): Promise<void> => {
+    for (let i = 0; i < attempts; i += 1) {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      if (predicate()) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error('Condition not met');
   };
 
   const sampleInstruments: DeribitInstrument[] = [
@@ -76,7 +92,8 @@ describe('AppComponent', () => {
 
     mockDeribitService = {
       fetchInstruments: jasmine.createSpy('fetchInstruments').and.resolveTo(sampleInstruments),
-      fetchInstrumentSummary: jasmine.createSpy('fetchInstrumentSummary').and.resolveTo(sampleSummary)
+      fetchInstrumentSummary: jasmine.createSpy('fetchInstrumentSummary').and.resolveTo(sampleSummary),
+      fetchBookSummaries: jasmine.createSpy('fetchBookSummaries').and.resolveTo(new Map())
     };
 
     tickerHandlers = new Map();
@@ -134,6 +151,10 @@ describe('AppComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const instrumentName = sampleInstruments[0].instrument_name;
+    expect(mockDeribitService.fetchInstrumentSummary).toHaveBeenCalledWith(instrumentName);
+    await mockDeribitService.fetchInstrumentSummary.calls.mostRecent().returnValue;
+    fixture.detectChanges();
+    expect(component.selectedInstrument()).toBe(instrumentName);
     expect(component.instrumentSummary()).toEqual(sampleSummary);
     expect(mockWebsocketService.subscribeTicker).toHaveBeenCalledWith(
       instrumentName,
@@ -159,10 +180,11 @@ describe('AppComponent', () => {
     handlers.forEach((handler) => handler(tickerPayload));
     fixture.detectChanges();
 
+    component.startLoop();
     triggerFrame();
     triggerFrame();
-    fixture.detectChanges();
-    await fixture.whenStable();
+    component.refreshOnce();
+    await waitForCondition(() => component.frameStatsView().sampleCount > 0);
 
     const updatedChain = component.selectedChain();
     expect(updatedChain?.rows[0]?.call.bid).toBeCloseTo(150, 5);
@@ -173,13 +195,13 @@ describe('AppComponent', () => {
     const statsRef = (component as unknown as { frameStatsRef: FrameStats }).frameStatsRef;
     expect(stats.sampleCount).toBeGreaterThan(0);
     expect(statsRef.sampleCount).toBeGreaterThan(0);
-    expect(component.smilePoints().length).toBeGreaterThan(0);
   });
 
   it('reports meeting the 60fps budget after enough samples', async () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
+    component.startLoop();
     triggerFrame();
     for (let i = 0; i < 120; i += 1) {
       triggerFrame(15);
@@ -197,6 +219,7 @@ describe('AppComponent', () => {
   it('resets frame statistics when refreshOnce is invoked', async () => {
     fixture.detectChanges();
     await fixture.whenStable();
+    component.startLoop();
     triggerFrame();
     triggerFrame();
     fixture.detectChanges();

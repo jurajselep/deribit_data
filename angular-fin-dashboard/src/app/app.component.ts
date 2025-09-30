@@ -6,14 +6,44 @@ import {
   OnDestroy,
   OnInit,
   ViewChild,
+  effect,
   computed,
   signal
 } from '@angular/core';
 import { NgClass, NgFor, NgIf } from '@angular/common';
 import * as THREE from 'three';
 import { Store } from '@ngrx/store';
-import { dashboardFrameUpdate, dashboardSelectMaturity } from './state/dashboard.actions';
+import {
+  dashboardChainsUpdate,
+  dashboardFrameUpdate,
+  dashboardInstrumentSummaryFailure,
+  dashboardInstrumentSummaryLoad,
+  dashboardInstrumentSummarySuccess,
+  dashboardInstrumentSummaryUpdate,
+  dashboardLoadInstruments,
+  dashboardLoadInstrumentsFailure,
+  dashboardLoadInstrumentsSuccess,
+  dashboardSelectCurrency,
+  dashboardSelectInstrument,
+  dashboardSelectMaturity,
+  dashboardSetMaturities
+} from './state/dashboard.actions';
 import { DASHBOARD_FEATURE_KEY, DashboardState } from './state/dashboard.reducer';
+import {
+  selectChains,
+  selectFrameStats,
+  selectInstrumentSummary,
+  selectInstrumentSummaryError,
+  selectInstrumentSummaryLoading,
+  selectInstruments,
+  selectInstrumentsError,
+  selectInstrumentsLoading,
+  selectMaturities,
+  selectSelectedChain,
+  selectSelectedCurrency,
+  selectSelectedInstrument,
+  selectSelectedMaturity
+} from './state/dashboard.selectors';
 import { createInitialStats, FrameStats, formatDuration, formatFrequency } from './models/frame-stats';
 import { HISTORY_CAPACITY, RECENT_HISTORY_SIZE } from './constants';
 import {
@@ -28,9 +58,13 @@ import {
   mutateOptionData,
   updateChainsWithTicker
 } from './data/options-chain';
+import { VolSurfaceSeries } from './models/vol-surface';
 import { DeribitInstrument, DeribitInstrumentSummary, DeribitTickerData } from './models/deribit';
 import { DeribitService } from './services/deribit.service';
+import { DeribitHistoryService } from './services/deribit-history.service';
 import { DeribitWebsocketService } from './services/deribit-websocket.service';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { buildHistoricalSurface } from './data/historical-surface';
 
 type FrameMeasurement = {
   frameSpacing: number;
@@ -69,15 +103,33 @@ type SmileTooltip = {
   iv: string;
   maturity: string;
 };
-type VolSurfaceSeries = {
-  strikes: number[];
-  strikeLabels: string[];
-  maturityLabels: string[];
-  maturityTicks: number[];
-  values: (number | null)[][];
-  minIv: number;
-  maxIv: number;
-  pointCount: number;
+type VerticalSpreadSuggestion = {
+  spreadType: 'call' | 'put';
+  longStrike: string;
+  shortStrike: string;
+  longPremiumText: string;
+  shortPremiumText: string;
+  netCost: number;
+  netCostText: string;
+  expectedProfit: number;
+  expectedProfitText: string;
+  maxProfit: number | null;
+  maxProfitText: string | null;
+  returnPct: number | null;
+  returnPctText: string | null;
+  maxLossText: string;
+  widthText: string;
+};
+type SpreadSuggestions = {
+  call: VerticalSpreadSuggestion[];
+  put: VerticalSpreadSuggestion[];
+};
+type HistoricalSurfaceSnapshot = {
+  timestamp: number;
+  label: string;
+  fullLabel: string;
+  surface: VolSurfaceSeries | null;
+  tradeCount: number;
 };
 
 const FRAME_TARGET_MS = 16.67;
@@ -87,6 +139,47 @@ const SYNTHETIC_CURRENCY = 'SYNTH';
 const SMILE_COLORS = ['#76dcb2', '#82a3f2', '#fcbf49', '#f472b6', '#38bdf8', '#f97316'];
 const SMILE_VIEWBOX_WIDTH = 600;
 const SMILE_VIEWBOX_HEIGHT = 160;
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2
+});
+const percentFormatter = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 0
+});
+
+type HistoricalIntervalOption = {
+  value: number;
+  label: string;
+  summary: string;
+};
+
+const HISTORICAL_INTERVAL_OPTIONS: readonly HistoricalIntervalOption[] = [
+  { value: 60, label: '1 hour', summary: '1h' },
+  { value: 240, label: '4 hours', summary: '4h' },
+  { value: 480, label: '8 hours', summary: '8h' },
+  { value: 1440, label: '24 hours', summary: '24h' }
+] as const;
+const HISTORICAL_FRAME_COUNT = 12;
+const HISTORICAL_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false
+});
+const HISTORICAL_FULL_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false
+});
+
+const isFiniteNumber = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const formatCurrency = (value: number): string => currencyFormatter.format(value);
+const formatPercentText = (value: number): string => `${percentFormatter.format(value)}%`;
 
 type CurrencyOption = {
   value: string;
@@ -124,28 +217,46 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     { value: 'ETH', label: 'ETH' },
     { value: SYNTHETIC_CURRENCY, label: 'Synthetic Data' }
   ];
-  readonly selectedCurrency = signal<string>('BTC');
-  readonly instruments = signal<DeribitInstrument[]>([], { equal: () => false });
-  readonly instrumentsLoading = signal(false);
-  readonly instrumentsError = signal<string | null>(null);
-  readonly selectedInstrument = signal<string | null>(null);
-  readonly instrumentSummary = signal<DeribitInstrumentSummary | null>(null, { equal: () => false });
-  readonly instrumentSummaryLoading = signal(false);
-  readonly instrumentSummaryError = signal<string | null>(null);
+  readonly selectedCurrency = toSignal(this.store.select(selectSelectedCurrency), {
+    initialValue: 'BTC'
+  });
+  readonly instruments = toSignal(this.store.select(selectInstruments), {
+    initialValue: [] as DeribitInstrument[]
+  });
+  readonly instrumentsLoading = toSignal(this.store.select(selectInstrumentsLoading), {
+    initialValue: false
+  });
+  readonly instrumentsError = toSignal(this.store.select(selectInstrumentsError), {
+    initialValue: null as string | null
+  });
+  readonly selectedInstrument = toSignal(this.store.select(selectSelectedInstrument), {
+    initialValue: null as string | null
+  });
+  readonly instrumentSummary = toSignal(this.store.select(selectInstrumentSummary), {
+    initialValue: null as DeribitInstrumentSummary | null
+  });
+  readonly instrumentSummaryLoading = toSignal(this.store.select(selectInstrumentSummaryLoading), {
+    initialValue: false
+  });
+  readonly instrumentSummaryError = toSignal(this.store.select(selectInstrumentSummaryError), {
+    initialValue: null as string | null
+  });
 
-  readonly maturities = signal(this.optionBuffers.maturities);
-  readonly selectedMaturity = signal(this.optionBuffers.maturities[0]?.id ?? '', {
-    equal: (a, b) => a === b
+  readonly maturities = toSignal(this.store.select(selectMaturities), {
+    initialValue: this.optionBuffers.maturities
   });
-  readonly chains = signal<Record<string, OptionChain>>(cloneChains(this.optionBuffers.chains), {
-    equal: () => false
+  readonly selectedMaturity = toSignal(this.store.select(selectSelectedMaturity), {
+    initialValue: this.optionBuffers.maturities[0]?.id ?? ''
   });
-  readonly selectedChain = computed<OptionChain | null>(() => {
-    const maturity = this.selectedMaturity();
-    const chains = this.chains();
-    return maturity && chains[maturity] ? chains[maturity] : null;
+  readonly chains = toSignal(this.store.select(selectChains), {
+    initialValue: cloneChains(this.optionBuffers.chains)
   });
-  readonly frameStats = signal<FrameStats>(this.frameStatsRef, { equal: () => false });
+  readonly selectedChain = toSignal(this.store.select(selectSelectedChain), {
+    initialValue: null
+  });
+  readonly frameStats = toSignal(this.store.select(selectFrameStats), {
+    initialValue: this.frameStatsRef
+  });
   readonly frameStatsView = computed(() => this.frameStats());
   readonly smileSeries = signal<SmileSeries[]>([], { equal: () => false });
   readonly smileAxis = signal<SmileAxis>({
@@ -157,8 +268,81 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   });
   readonly smileFilter = signal<string | null>(null);
   readonly smileTooltip = signal<SmileTooltip | null>(null);
-  readonly volSurface = signal<VolSurfaceSeries | null>(null, { equal: () => false });
+  readonly liveVolSurface = signal<VolSurfaceSeries | null>(null, { equal: () => false });
+  readonly historicalMode = signal(false);
+  readonly historicalIntervals = HISTORICAL_INTERVAL_OPTIONS;
+  readonly historicalInterval = signal<number>(HISTORICAL_INTERVAL_OPTIONS[0].value);
+  readonly historicalSnapshots = signal<HistoricalSurfaceSnapshot[]>([]);
+  readonly historicalSelectedIndex = signal(0);
+  readonly historicalLoading = signal(false);
+  readonly historicalError = signal<string | null>(null);
+  private readonly historicalSurfaceOverride = computed<VolSurfaceSeries | null>(() => {
+    const snapshots = this.historicalSnapshots();
+    const index = this.historicalSelectedIndex();
+    return snapshots[index]?.surface ?? null;
+  });
+  readonly activeHistoricalSnapshot = computed<HistoricalSurfaceSnapshot | null>(() => {
+    const snapshots = this.historicalSnapshots();
+    const index = this.historicalSelectedIndex();
+    return snapshots[index] ?? null;
+  });
+  readonly volSurface = computed<VolSurfaceSeries | null>(() =>
+    this.historicalMode() ? this.historicalSurfaceOverride() : this.liveVolSurface()
+  );
+  readonly volSurfaceSummary = computed(() => {
+    if (this.historicalMode()) {
+      const intervalOption = HISTORICAL_INTERVAL_OPTIONS.find(
+        (option) => option.value === this.historicalInterval()
+      );
+      if (this.historicalLoading()) {
+        return 'Loading historical surface…';
+      }
+      const error = this.historicalError();
+      if (error) {
+        return error;
+      }
+      const snapshot = this.activeHistoricalSnapshot();
+      if (snapshot) {
+        const intervalText = intervalOption?.summary ?? `${this.historicalInterval()}m`;
+        return `${snapshot.fullLabel} · ${intervalText} steps · ${snapshot.tradeCount} trades`;
+      }
+      return 'No historical snapshots loaded yet.';
+    }
+
+    const surface = this.volSurface();
+    if (surface) {
+      return `${surface.maturityLabels.length} maturities · ${surface.strikeLabels.length} strikes · ${surface.pointCount} pts`;
+    }
+    return 'Awaiting live surface data…';
+  });
   readonly loopRunning = signal(false);
+  readonly expectedExpiryPriceInput = signal('');
+  readonly expectedExpiryPrice = computed<number | null>(() => {
+    const raw = this.expectedExpiryPriceInput().trim();
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  });
+  readonly selectedStrike = signal<number | null>(null);
+  readonly selectedStrikeRow = computed<OptionRow | null>(() => {
+    const chain = this.selectedChain();
+    const strike = this.selectedStrike();
+    if (!chain || strike === null) {
+      return null;
+    }
+    return chain.rows.find((row) => Math.abs(row.strike - strike) < 1e-6) ?? null;
+  });
+  readonly spreadSuggestions = computed<SpreadSuggestions>(() => {
+    const chain = this.selectedChain();
+    const price = this.expectedExpiryPrice();
+    const strike = this.selectedStrike();
+    if (!chain || price === null || strike === null) {
+      return { call: [], put: [] };
+    }
+    return this.computeSpreadSuggestions(chain.rows, strike, price);
+  });
 
   private volSurfaceCanvasRef?: ElementRef<HTMLCanvasElement>;
   private smileContainerRef?: ElementRef<HTMLDivElement>;
@@ -183,12 +367,66 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   private historyWriteIndex = 0;
   private historyLength = 0;
   private readonly sortScratch: number[] = new Array(HISTORY_CAPACITY);
+  private historicalRequestId = 0;
+  private historicalSnapshotsKey: string | null = null;
 
   constructor(
     private readonly store: Store<AppState>,
     private readonly deribit: DeribitService,
-    private readonly deribitWebsocket: DeribitWebsocketService
-  ) {}
+    private readonly deribitWebsocket: DeribitWebsocketService,
+    private readonly deribitHistory: DeribitHistoryService
+  ) {
+    effect(() => {
+      if (this.historicalMode()) {
+        return;
+      }
+      const chains = this.chains();
+      this.recomputeSmile(chains);
+    });
+
+    effect(() => {
+      const surface = this.volSurface();
+      this.volSurfaceData = surface;
+      this.updateSurfaceGeometry();
+    });
+
+    effect(() => {
+      if (!this.historicalMode()) {
+        return;
+      }
+      const snapshot = this.activeHistoricalSnapshot();
+      this.applyHistoricalSmile(snapshot?.surface ?? null);
+    });
+
+    effect(() => {
+      const currency = this.selectedCurrency();
+      if (this.isSyntheticCurrency(currency) && this.historicalMode()) {
+        this.historicalMode.set(false);
+      }
+    });
+
+    effect(() => {
+      if (!this.historicalMode()) {
+        return;
+      }
+      if (this.historicalLoading()) {
+        return;
+      }
+      const currency = this.selectedCurrency();
+      const interval = this.historicalInterval();
+      if (this.isSyntheticCurrency(currency)) {
+        this.historicalSnapshotsKey = null;
+        this.historicalSnapshots.set([]);
+        this.historicalError.set('Historical data is unavailable for synthetic instruments.');
+        return;
+      }
+      const key = `${currency}|${interval}`;
+      if (this.historicalSnapshotsKey === key && this.historicalSnapshots().length) {
+        return;
+      }
+      void this.loadHistoricalSnapshots(currency, interval);
+    });
+  }
 
   ngOnInit(): void {
     this.dispatchSnapshot();
@@ -236,11 +474,10 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (currency === this.selectedCurrency()) {
       return;
     }
-    this.selectedCurrency.set(currency);
-    this.selectedInstrument.set(null);
-    this.instruments.set([]);
+    this.selectedStrike.set(null);
     this.unsubscribeFromTicker();
     this.clearChainTickerSubscriptions();
+    this.store.dispatch(dashboardSelectCurrency({ currency }));
     void this.loadInstruments(currency);
   }
 
@@ -253,16 +490,103 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (maturity === this.selectedMaturity()) {
       return;
     }
-    this.selectedMaturity.set(maturity);
+    this.selectedStrike.set(null);
     this.store.dispatch(dashboardSelectMaturity({ maturity }));
-
-    this.recomputeSmile(this.chains());
     this.onMaturityChanged(maturity);
   }
 
   toggleSmileFilter(maturity: string): void {
     const current = this.smileFilter();
     this.smileFilter.set(current === maturity ? null : maturity);
+  }
+
+  setExpectedExpiryPrice(value: string): void {
+    const normalized = value.replace(/[^0-9.]/g, '');
+    this.expectedExpiryPriceInput.set(normalized);
+  }
+
+  setHistoricalMode(mode: boolean): void {
+    const normalized = Boolean(mode);
+    if (normalized === this.historicalMode()) {
+      return;
+    }
+    if (normalized && this.isSyntheticCurrency(this.selectedCurrency())) {
+      this.historicalError.set('Historical data is unavailable for synthetic instruments.');
+      return;
+    }
+    this.historicalMode.set(normalized);
+    if (!normalized) {
+      this.historicalRequestId += 1;
+      this.historicalLoading.set(false);
+      this.historicalError.set(null);
+    }
+  }
+
+  setHistoricalInterval(value: number | string): void {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+    if (!HISTORICAL_INTERVAL_OPTIONS.some((option) => option.value === numeric)) {
+      return;
+    }
+    if (numeric === this.historicalInterval()) {
+      return;
+    }
+    this.historicalInterval.set(numeric);
+    this.historicalRequestId += 1;
+    this.historicalLoading.set(false);
+    this.historicalError.set(null);
+    this.historicalSnapshotsKey = null;
+    this.historicalSelectedIndex.set(0);
+    this.historicalSnapshots.set([]);
+  }
+
+  refreshHistoricalSnapshots(): void {
+    if (!this.historicalMode() || this.historicalLoading()) {
+      return;
+    }
+    const currency = this.selectedCurrency();
+    if (this.isSyntheticCurrency(currency)) {
+      this.historicalError.set('Historical data is unavailable for synthetic instruments.');
+      return;
+    }
+    this.historicalRequestId += 1;
+    this.historicalLoading.set(false);
+    this.historicalSnapshotsKey = null;
+    this.historicalSnapshots.set([]);
+    this.historicalSelectedIndex.set(0);
+    this.historicalError.set(null);
+    void this.loadHistoricalSnapshots(currency, this.historicalInterval());
+  }
+
+  selectHistoricalSnapshot(index: number): void {
+    const snapshots = this.historicalSnapshots();
+    if (!snapshots.length) {
+      return;
+    }
+    const clamped = Math.max(0, Math.min(index, snapshots.length - 1));
+    if (clamped === this.historicalSelectedIndex()) {
+      return;
+    }
+    this.historicalSelectedIndex.set(clamped);
+  }
+
+  stepHistoricalSnapshot(delta: number): void {
+    if (!Number.isFinite(delta)) {
+      return;
+    }
+    const snapshots = this.historicalSnapshots();
+    if (!snapshots.length) {
+      return;
+    }
+    const nextIndex = this.historicalSelectedIndex() + Math.trunc(delta);
+    this.selectHistoricalSnapshot(nextIndex);
+  }
+
+  selectStrike(row: OptionRow): void {
+    const current = this.selectedStrike();
+    this.selectedStrike.set(current === row.strike ? null : row.strike);
   }
 
   showSmileTooltip(event: MouseEvent, point: SmilePoint, series: SmileSeries): void {
@@ -300,6 +624,74 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   trackByStrike = (_: number, row: OptionRow) => row.strike;
+
+  private async loadHistoricalSnapshots(currency: string, intervalMinutes: number): Promise<void> {
+    const requestId = ++this.historicalRequestId;
+    this.historicalLoading.set(true);
+    this.historicalError.set(null);
+    this.historicalSnapshotsKey = null;
+    this.historicalSnapshots.set([]);
+    this.historicalSelectedIndex.set(0);
+
+    const intervalMs = Math.max(1, Math.round(intervalMinutes * 60_000));
+    const nowTs = Date.now();
+    const snapshots: HistoricalSurfaceSnapshot[] = [];
+
+    try {
+      for (let offset = HISTORICAL_FRAME_COUNT - 1; offset >= 0; offset -= 1) {
+        if (requestId !== this.historicalRequestId) {
+          return;
+        }
+
+        const targetTimestamp = nowTs - offset * intervalMs;
+        const startTimestamp = Math.max(0, targetTimestamp - intervalMs);
+        const trades = await this.deribitHistory.fetchOptionTrades(
+          currency,
+          startTimestamp,
+          targetTimestamp
+        );
+
+        if (requestId !== this.historicalRequestId) {
+          return;
+        }
+
+        const surface = buildHistoricalSurface(trades, targetTimestamp);
+        const timestampDate = new Date(targetTimestamp);
+        snapshots.push({
+          timestamp: targetTimestamp,
+          label: HISTORICAL_TIME_FORMATTER.format(timestampDate),
+          fullLabel: HISTORICAL_FULL_FORMATTER.format(timestampDate),
+          surface,
+          tradeCount: trades.length
+        });
+      }
+
+      if (requestId !== this.historicalRequestId) {
+        return;
+      }
+
+      snapshots.sort((a, b) => a.timestamp - b.timestamp);
+      this.historicalSnapshots.set(snapshots);
+      if (snapshots.length) {
+        this.historicalSelectedIndex.set(snapshots.length - 1);
+        this.historicalError.set(null);
+      } else {
+        this.historicalError.set('No option trades found for the selected interval.');
+      }
+      this.historicalSnapshotsKey = `${currency}|${intervalMinutes}`;
+    } catch (error) {
+      if (requestId !== this.historicalRequestId) {
+        return;
+      }
+      const message = (error as Error).message ?? 'Unable to load historical data';
+      this.historicalError.set(message);
+      this.historicalSnapshotsKey = null;
+    } finally {
+      if (requestId === this.historicalRequestId) {
+        this.historicalLoading.set(false);
+      }
+    }
+  }
 
   private mutateSyntheticData(): number {
     if (!this.isSyntheticCurrency(this.selectedCurrency())) {
@@ -360,11 +752,10 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
     const signalStart = performance.now();
     const nextChains = cloneChains(this.optionBuffers.chains);
-    this.chains.set(nextChains);
     const signalDuration = performance.now() - signalStart;
 
     const smileStart = performance.now();
-    this.recomputeSmile(nextChains);
+    this.buildSmileData(nextChains);
     const smileDuration = performance.now() - smileStart;
 
     stats.lastSignalDuration = signalDuration;
@@ -389,8 +780,6 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     stats.statusText = stats.sampleCount < MIN_SAMPLES_FOR_ASSESSMENT ? 'Measuring...' : meetsBudget ? 'Yes' : 'No';
 
     this.updateHistory(totalCost, stats);
-
-    this.frameStats.set(this.frameStatsRef);
 
     const statsForStore: FrameStats = { ...this.frameStatsRef };
     this.store.dispatch(dashboardFrameUpdate({ chains: nextChains, stats: statsForStore }));
@@ -457,24 +846,18 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     scratch.length = HISTORY_CAPACITY;
   }
 
-  private dispatchSnapshot(): void {
+  private dispatchSnapshot(preferredMaturity?: string): void {
     const nextChains = cloneChains(this.optionBuffers.chains);
     const statsForStore: FrameStats = { ...this.frameStatsRef };
-    this.chains.set(nextChains);
-    this.recomputeSmile(nextChains);
     this.store.dispatch(dashboardFrameUpdate({ chains: nextChains, stats: statsForStore }));
-    const maturity = this.selectedMaturity();
+    const maturity = preferredMaturity ?? this.selectedMaturity();
     if (maturity) {
       this.store.dispatch(dashboardSelectMaturity({ maturity }));
     }
   }
 
   private async loadInstruments(currency: string): Promise<void> {
-    this.instrumentsLoading.set(true);
-    this.instrumentsError.set(null);
-    this.instrumentSummary.set(null);
-    this.instrumentSummaryError.set(null);
-    this.instrumentSummaryLoading.set(false);
+    this.store.dispatch(dashboardLoadInstruments({ currency }));
     try {
       const instruments = await this.deribit.fetchInstruments(currency);
       const sorted = [...instruments].filter((instrument) => instrument.kind === 'option');
@@ -482,6 +865,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
         const exp = a.expiration_timestamp - b.expiration_timestamp;
         return exp !== 0 ? exp : a.strike - b.strike;
       });
+
       let bookSummaries: Map<string, DeribitInstrumentSummary> | undefined;
       if (!this.isSyntheticCurrency(currency)) {
         try {
@@ -490,68 +874,65 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
           console.warn('Unable to load book summaries', error);
         }
       }
-      this.instruments.set(sorted);
-      this.initializeOptionData(sorted, bookSummaries);
+
+      this.store.dispatch(dashboardLoadInstrumentsSuccess({ instruments: sorted }));
+      this.initializeOptionData(currency, sorted, bookSummaries);
+
       const current = this.selectedInstrument();
       const exists = current && sorted.some((instrument) => instrument.instrument_name === current);
       const targetInstrument = exists ? current : sorted[0]?.instrument_name ?? null;
       this.applyInstrument(targetInstrument ?? null);
     } catch (error) {
       const message = (error as Error).message ?? 'Unable to load instruments';
-      this.instrumentsError.set(message);
-      this.instrumentSummaryError.set(message);
-      this.instruments.set([]);
-      this.instrumentSummary.set(null);
-    } finally {
-      this.instrumentsLoading.set(false);
+      this.store.dispatch(dashboardLoadInstrumentsFailure({ error: message }));
     }
   }
 
   private initializeOptionData(
+    currency: string,
     instruments: DeribitInstrument[],
     summaries?: Map<string, DeribitInstrumentSummary>
   ): void {
     this.clearChainTickerSubscriptions();
-    this.optionBuffers = this.isSyntheticCurrency(this.selectedCurrency())
+    this.selectedStrike.set(null);
+    this.optionBuffers = this.isSyntheticCurrency(currency)
       ? createOptionDataBuffers()
       : createOptionDataBuffersFromInstruments(instruments, summaries);
 
     const maturities = this.optionBuffers.maturities;
-    this.maturities.set(maturities);
     const initialMaturity = maturities[0]?.id ?? '';
-    this.selectedMaturity.set(initialMaturity);
-    this.dispatchSnapshot();
-    this.onMaturityChanged(initialMaturity);
+    this.store.dispatch(dashboardSetMaturities({ maturities }));
+    this.dispatchSnapshot(initialMaturity);
+    if (initialMaturity) {
+      this.onMaturityChanged(initialMaturity);
+    } else {
+      this.clearChainTickerSubscriptions();
+    }
   }
 
   private applyInstrument(instrumentName: string | null): void {
-    this.selectedInstrument.set(instrumentName);
+    this.selectedStrike.set(null);
+    this.store.dispatch(dashboardSelectInstrument({ instrument: instrumentName }));
     this.unsubscribeFromTicker();
     if (!instrumentName) {
-      this.instrumentSummary.set(null);
-      this.instrumentSummaryError.set(null);
+      this.store.dispatch(dashboardInstrumentSummarySuccess({ summary: null }));
       return;
     }
 
     const maturity = this.parseInstrumentMaturity(instrumentName);
     if (!maturity) {
-      this.instrumentSummary.set(null);
-      this.instrumentSummaryError.set(null);
+      this.store.dispatch(dashboardInstrumentSummarySuccess({ summary: null }));
       return;
     }
 
     if (maturity !== this.selectedMaturity()) {
-      this.selectedMaturity.set(maturity);
       this.store.dispatch(dashboardSelectMaturity({ maturity }));
     }
 
-    const chains = this.chains();
-    this.recomputeSmile(chains);
     this.onMaturityChanged(maturity);
 
     if (this.isSyntheticCurrency(this.selectedCurrency())) {
-      this.instrumentSummary.set(null);
-      this.instrumentSummaryError.set(null);
+      this.store.dispatch(dashboardInstrumentSummarySuccess({ summary: null }));
       return;
     }
 
@@ -561,20 +942,16 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private async loadInstrumentSummary(instrumentName: string): Promise<void> {
     if (this.isSyntheticCurrency(this.selectedCurrency())) {
-      this.instrumentSummary.set(null);
-      this.instrumentSummaryError.set(null);
+      this.store.dispatch(dashboardInstrumentSummarySuccess({ summary: null }));
       return;
     }
-    this.instrumentSummaryLoading.set(true);
-    this.instrumentSummaryError.set(null);
+    this.store.dispatch(dashboardInstrumentSummaryLoad({ instrument: instrumentName }));
     try {
       const summary = await this.deribit.fetchInstrumentSummary(instrumentName);
-      this.instrumentSummary.set(summary);
+      this.store.dispatch(dashboardInstrumentSummarySuccess({ summary }));
     } catch (error) {
-      this.instrumentSummary.set(null);
-      this.instrumentSummaryError.set((error as Error).message ?? 'Unable to load instrument data');
-    } finally {
-      this.instrumentSummaryLoading.set(false);
+      const message = (error as Error).message ?? 'Unable to load instrument data';
+      this.store.dispatch(dashboardInstrumentSummaryFailure({ error: message }));
     }
   }
 
@@ -602,6 +979,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       maturity: { id: string; label: string };
       rows: Array<{ strike: number; strikeText: string; iv: number }>;
     }> = [];
+    const ivValues: number[] = [];
 
     maturities.forEach((maturity) => {
       const chain = chains[maturity.id];
@@ -621,6 +999,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
         const value = iv as number;
         finiteRows.push({ strike: row.strike, strikeText: row.strikeText, iv: value });
+        ivValues.push(value);
 
         if (row.strike < minStrike) {
           minStrike = row.strike;
@@ -670,8 +1049,59 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       maxIv = minIv + 0.01;
     }
 
+    let axisMinIv = minIv;
+    let axisMaxIv = maxIv;
+
+    if (ivValues.length >= 3) {
+      const sorted = ivValues.slice().sort((a, b) => a - b);
+      const quantile = (fraction: number): number => {
+        if (!sorted.length) {
+          return Number.NaN;
+        }
+        if (sorted.length === 1) {
+          return sorted[0];
+        }
+        const pos = (sorted.length - 1) * fraction;
+        const baseIndex = Math.floor(pos);
+        const nextIndex = Math.min(baseIndex + 1, sorted.length - 1);
+        const remainder = pos - baseIndex;
+        const lower = sorted[baseIndex];
+        const upper = sorted[nextIndex];
+        return lower + (upper - lower) * remainder;
+      };
+      const lower = quantile(0.05);
+      const upper = quantile(0.95);
+      if (Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
+        axisMinIv = lower;
+        axisMaxIv = upper;
+      }
+    }
+
+    if (!Number.isFinite(axisMinIv) || !Number.isFinite(axisMaxIv)) {
+      axisMinIv = minIv;
+      axisMaxIv = maxIv;
+    }
+
+    if (!Number.isFinite(axisMinIv) || !Number.isFinite(axisMaxIv)) {
+      axisMinIv = 0.05;
+      axisMaxIv = 1;
+    }
+
+    if (axisMinIv === axisMaxIv) {
+      axisMaxIv = axisMinIv + 0.01;
+    }
+
+    const baseRange = axisMaxIv - axisMinIv;
+    const padding = baseRange > 0 ? baseRange * 0.08 : axisMinIv * 0.08 || 0.01;
+    axisMinIv = Math.max(0.01, axisMinIv - padding);
+    axisMaxIv = axisMaxIv + padding;
+
+    if (axisMinIv >= axisMaxIv) {
+      axisMaxIv = axisMinIv + 0.01;
+    }
+
     const strikeRange = maxStrike - minStrike;
-    const ivRange = maxIv - minIv;
+    const ivRange = axisMaxIv - axisMinIv;
     const width = 600;
     const height = 140;
     const topPadding = 12;
@@ -683,7 +1113,8 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       const color = SMILE_COLORS[index % SMILE_COLORS.length];
       const points: SmilePoint[] = validRows.map((row) => {
         const x = ((row.strike - minStrike) / strikeRange) * width;
-        const y = height - ((row.iv - minIv) / ivRange) * (height - topPadding) - topPadding;
+        const clampedIv = Math.min(axisMaxIv, Math.max(axisMinIv, row.iv));
+        const y = height - ((clampedIv - axisMinIv) / ivRange) * (height - topPadding) - topPadding;
         return {
           x: Number(x.toFixed(2)),
           y: Number(y.toFixed(2)),
@@ -713,16 +1144,16 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     const ticks: Array<{ label: string; position: number }> = [];
     for (let i = 0; i <= tickDivisions; i += 1) {
       const ratio = i / tickDivisions;
-      const value = maxIv - ratio * ivRange;
-      const y = height - ((value - minIv) / ivRange) * (height - topPadding) - topPadding;
+      const value = axisMaxIv - ratio * ivRange;
+      const y = height - ((value - axisMinIv) / ivRange) * (height - topPadding) - topPadding;
       ticks.push({ label: this.formatIv(value), position: Number(y.toFixed(2)) });
     }
 
     const axis: SmileAxis = {
       minStrike: minStrikeText || firstRow?.strikeText || '',
       maxStrike: maxStrikeText || lastRow?.strikeText || '',
-      minIv: this.formatIv(minIv),
-      maxIv: this.formatIv(maxIv),
+      minIv: this.formatIv(axisMinIv),
+      maxIv: this.formatIv(axisMaxIv),
       ticks
     };
 
@@ -761,6 +1192,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (strikeEntries.length >= 2 && rawSeries.length >= 2) {
       const strikeValues = strikeEntries.map(([strike]) => strike);
       const strikeLabels = strikeEntries.map(([, label]) => label);
+      const maturityIds = rawSeries.map((entry) => entry.maturity.id);
       const maturityLabels = rawSeries.map((entry) => entry.maturity.label);
       const maturityTicks = rawSeries.map((entry) => Date.parse(`${entry.maturity.id}T00:00:00Z`));
       const values = rawSeries.map((entry) =>
@@ -785,6 +1217,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
         surface = {
           strikes: strikeValues,
           strikeLabels,
+          maturityIds,
           maturityLabels,
           maturityTicks,
           values,
@@ -796,6 +1229,355 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     }
 
     return { series, axis, surface };
+  }
+
+  private buildHistoricalSmile(surface: VolSurfaceSeries): { series: SmileSeries[]; axis: SmileAxis } {
+    const strikes = surface.strikes;
+    const strikeLabels = surface.strikeLabels;
+    const maturityLabels = surface.maturityLabels;
+    const maturityIds = surface.maturityIds;
+    const values = surface.values;
+
+    if (!strikes.length || values.length === 0) {
+      return {
+        series: [],
+        axis: { minStrike: '', maxStrike: '', minIv: '', maxIv: '', ticks: [] }
+      };
+    }
+
+    let minStrike = Math.min(...strikes);
+    let maxStrike = Math.max(...strikes);
+    if (!Number.isFinite(minStrike) || !Number.isFinite(maxStrike) || minStrike === maxStrike) {
+      minStrike = strikes[0] ?? 0;
+      maxStrike = strikes[strikes.length - 1] ?? minStrike + 1;
+      if (minStrike === maxStrike) {
+        maxStrike = minStrike + 1;
+      }
+    }
+
+    const minStrikeText = strikeLabels[0] ?? '';
+    const maxStrikeText = strikeLabels[strikeLabels.length - 1] ?? '';
+
+    const ivValues: number[] = [];
+    let minIv = Number.POSITIVE_INFINITY;
+    let maxIv = Number.NEGATIVE_INFINITY;
+    values.forEach((row) => {
+      row.forEach((value) => {
+        if (value === null || !Number.isFinite(value)) {
+          return;
+        }
+        ivValues.push(value);
+        if (value < minIv) minIv = value;
+        if (value > maxIv) maxIv = value;
+      });
+    });
+
+    if (!Number.isFinite(minIv) || !Number.isFinite(maxIv)) {
+      minIv = 0.05;
+      maxIv = 1;
+    }
+    if (minIv === maxIv) {
+      maxIv = minIv + 0.01;
+    }
+
+    let axisMinIv = minIv;
+    let axisMaxIv = maxIv;
+    if (ivValues.length >= 3) {
+      const sorted = ivValues.slice().sort((a, b) => a - b);
+      const quantile = (fraction: number): number => {
+        if (!sorted.length) {
+          return Number.NaN;
+        }
+        if (sorted.length === 1) {
+          return sorted[0];
+        }
+        const pos = (sorted.length - 1) * fraction;
+        const baseIndex = Math.floor(pos);
+        const nextIndex = Math.min(baseIndex + 1, sorted.length - 1);
+        const remainder = pos - baseIndex;
+        const lower = sorted[baseIndex];
+        const upper = sorted[nextIndex];
+        return lower + (upper - lower) * remainder;
+      };
+
+      const lower = quantile(0.05);
+      const upper = quantile(0.95);
+      if (Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
+        axisMinIv = lower;
+        axisMaxIv = upper;
+      }
+    }
+
+    if (!Number.isFinite(axisMinIv) || !Number.isFinite(axisMaxIv)) {
+      axisMinIv = minIv;
+      axisMaxIv = maxIv;
+    }
+
+    if (axisMinIv === axisMaxIv) {
+      axisMaxIv = axisMinIv + 0.01;
+    }
+
+    const baseRange = axisMaxIv - axisMinIv;
+    const padding = baseRange > 0 ? baseRange * 0.08 : axisMinIv * 0.08 || 0.01;
+    axisMinIv = Math.max(0.01, axisMinIv - padding);
+    axisMaxIv = axisMaxIv + padding;
+    if (axisMinIv >= axisMaxIv) {
+      axisMaxIv = axisMinIv + 0.01;
+    }
+
+    const strikeRange = maxStrike - minStrike;
+    const ivRange = axisMaxIv - axisMinIv;
+    const width = SMILE_VIEWBOX_WIDTH;
+    const height = SMILE_VIEWBOX_HEIGHT;
+    const topPadding = 12;
+    const selectedMaturity = this.selectedMaturity();
+
+    const series: SmileSeries[] = values.map((row, rowIndex) => {
+      const maturityLabel = maturityLabels[rowIndex] ?? `Maturity ${rowIndex + 1}`;
+      const maturityId = maturityIds[rowIndex] ?? `hist-${rowIndex}`;
+      const points: SmilePoint[] = [];
+
+      row.forEach((iv, colIndex) => {
+        if (iv === null || !Number.isFinite(iv)) {
+          return;
+        }
+        const strike = strikes[colIndex] ?? 0;
+        const strikeLabel = strikeLabels[colIndex] ?? strike.toString();
+        const x = strikeRange > 0 ? ((strike - minStrike) / strikeRange) * width : width / 2;
+        const clampedIv = Math.min(axisMaxIv, Math.max(axisMinIv, iv));
+        const y = height - ((clampedIv - axisMinIv) / ivRange) * (height - topPadding) - topPadding;
+        points.push({
+          x: Number(x.toFixed(2)),
+          y: Number(y.toFixed(2)),
+          strike,
+          strikeText: strikeLabel,
+          iv,
+          ivText: this.formatIv(iv)
+        });
+      });
+
+      const path = points.map((point) => `${point.x},${point.y}`).join(' ');
+      const isSelected = maturityId === selectedMaturity;
+
+      return {
+        maturity: maturityId,
+        label: maturityLabel,
+        color: SMILE_COLORS[rowIndex % SMILE_COLORS.length],
+        points,
+        path,
+        isSelected
+      };
+    });
+
+    let hasSelected = series.some((entry) => entry.isSelected && entry.points.length);
+    if (!hasSelected) {
+      for (let i = series.length - 1; i >= 0; i -= 1) {
+        if (series[i].points.length) {
+          series[i].isSelected = true;
+          hasSelected = true;
+          break;
+        }
+      }
+    }
+
+    const axisTicks: Array<{ label: string; position: number }> = [];
+    const tickDivisions = 4;
+    for (let i = 0; i <= tickDivisions; i += 1) {
+      const ratio = i / tickDivisions;
+      const value = axisMaxIv - ratio * ivRange;
+      const y = height - ((value - axisMinIv) / ivRange) * (height - topPadding) - topPadding;
+      axisTicks.push({ label: this.formatIv(value), position: Number(y.toFixed(2)) });
+    }
+
+    return {
+      series,
+      axis: {
+        minStrike: minStrikeText,
+        maxStrike: maxStrikeText,
+        minIv: this.formatIv(axisMinIv),
+        maxIv: this.formatIv(axisMaxIv),
+        ticks: axisTicks
+      }
+    };
+  }
+
+  private applyHistoricalSmile(surface: VolSurfaceSeries | null): void {
+    if (!surface) {
+      this.smileSeries.set([]);
+      this.smileAxis.set({ minStrike: '', maxStrike: '', minIv: '', maxIv: '', ticks: [] });
+      return;
+    }
+
+    const { series, axis } = this.buildHistoricalSmile(surface);
+    this.smileSeries.set(series);
+    this.smileAxis.set(axis);
+
+    const filter = this.smileFilter();
+    if (filter && !series.some((entry) => entry.maturity === filter && entry.points.length)) {
+      this.smileFilter.set(null);
+    }
+  }
+
+  private computeSpreadSuggestions(
+    rows: OptionRow[],
+    baseStrike: number,
+    expectedPrice: number
+  ): SpreadSuggestions {
+    if (!rows.length) {
+      return { call: [], put: [] };
+    }
+
+    const sorted = [...rows].sort((a, b) => a.strike - b.strike);
+    const baseRow = sorted.find((row) => Math.abs(row.strike - baseStrike) < 1e-6);
+    if (!baseRow) {
+      return { call: [], put: [] };
+    }
+
+    const callSpreads = this.computeCallSpreadSuggestions(sorted, baseRow, expectedPrice);
+    const putSpreads = this.computePutSpreadSuggestions(sorted, baseRow, expectedPrice);
+    return { call: callSpreads, put: putSpreads };
+  }
+
+  private computeCallSpreadSuggestions(
+    rows: OptionRow[],
+    baseRow: OptionRow,
+    expectedPrice: number
+  ): VerticalSpreadSuggestion[] {
+    const longPremium = baseRow.call.ask;
+    if (!isFiniteNumber(longPremium) || longPremium <= 0) {
+      return [];
+    }
+
+    const results: VerticalSpreadSuggestion[] = [];
+    rows.forEach((candidate) => {
+      if (candidate.strike <= baseRow.strike) {
+        return;
+      }
+
+      const shortPremium = candidate.call.bid;
+      if (!isFiniteNumber(shortPremium) || shortPremium < 0) {
+        return;
+      }
+
+      const width = candidate.strike - baseRow.strike;
+      if (!Number.isFinite(width) || width <= 0) {
+        return;
+      }
+
+      const netCost = longPremium - shortPremium;
+      if (!Number.isFinite(netCost) || netCost <= 0 || netCost >= width) {
+        return;
+      }
+
+      const payoffAtTarget =
+        Math.max(expectedPrice - baseRow.strike, 0) - Math.max(expectedPrice - candidate.strike, 0);
+      const expectedProfit = payoffAtTarget - netCost;
+      if (!Number.isFinite(expectedProfit) || expectedProfit <= 0) {
+        return;
+      }
+
+      const maxProfit = width - netCost;
+      const returnPct = expectedProfit / netCost;
+
+      results.push({
+        spreadType: 'call',
+        longStrike: baseRow.strikeText,
+        shortStrike: candidate.strikeText,
+        longPremiumText: formatCurrency(longPremium),
+        shortPremiumText: formatCurrency(shortPremium),
+        netCost,
+        netCostText: formatCurrency(netCost),
+        expectedProfit,
+        expectedProfitText: formatCurrency(expectedProfit),
+        maxProfit,
+        maxProfitText: formatCurrency(maxProfit),
+        maxLossText: formatCurrency(netCost),
+        widthText: formatCurrency(width),
+        returnPct,
+        returnPctText: formatPercentText(returnPct * 100)
+      });
+    });
+
+    return this.rankSpreadSuggestions(results);
+  }
+
+  private computePutSpreadSuggestions(
+    rows: OptionRow[],
+    baseRow: OptionRow,
+    expectedPrice: number
+  ): VerticalSpreadSuggestion[] {
+    const longPremium = baseRow.put.ask;
+    if (!isFiniteNumber(longPremium) || longPremium <= 0) {
+      return [];
+    }
+
+    const results: VerticalSpreadSuggestion[] = [];
+    rows.forEach((candidate) => {
+      if (candidate.strike >= baseRow.strike) {
+        return;
+      }
+
+      const shortPremium = candidate.put.bid;
+      if (!isFiniteNumber(shortPremium) || shortPremium < 0) {
+        return;
+      }
+
+      const width = baseRow.strike - candidate.strike;
+      if (!Number.isFinite(width) || width <= 0) {
+        return;
+      }
+
+      const netCost = longPremium - shortPremium;
+      if (!Number.isFinite(netCost) || netCost <= 0 || netCost >= width) {
+        return;
+      }
+
+      const payoffAtTarget =
+        Math.max(baseRow.strike - expectedPrice, 0) - Math.max(candidate.strike - expectedPrice, 0);
+      const expectedProfit = payoffAtTarget - netCost;
+      if (!Number.isFinite(expectedProfit) || expectedProfit <= 0) {
+        return;
+      }
+
+      const maxProfit = width - netCost;
+      const returnPct = expectedProfit / netCost;
+
+      results.push({
+        spreadType: 'put',
+        longStrike: baseRow.strikeText,
+        shortStrike: candidate.strikeText,
+        longPremiumText: formatCurrency(longPremium),
+        shortPremiumText: formatCurrency(shortPremium),
+        netCost,
+        netCostText: formatCurrency(netCost),
+        expectedProfit,
+        expectedProfitText: formatCurrency(expectedProfit),
+        maxProfit,
+        maxProfitText: formatCurrency(maxProfit),
+        maxLossText: formatCurrency(netCost),
+        widthText: formatCurrency(width),
+        returnPct,
+        returnPctText: formatPercentText(returnPct * 100)
+      });
+    });
+
+    return this.rankSpreadSuggestions(results);
+  }
+
+  private rankSpreadSuggestions(spreads: VerticalSpreadSuggestion[]): VerticalSpreadSuggestion[] {
+    if (!spreads.length) {
+      return [];
+    }
+
+    const scored = [...spreads].sort((a, b) => {
+      const returnDiff = (b.returnPct ?? Number.NEGATIVE_INFINITY) - (a.returnPct ?? Number.NEGATIVE_INFINITY);
+      if (Number.isFinite(returnDiff) && returnDiff !== 0) {
+        return returnDiff;
+      }
+      return b.expectedProfit - a.expectedProfit;
+    });
+
+    return scored.slice(0, 3);
   }
 
   private recomputeSmile(chains: Record<string, OptionChain>): void {
@@ -836,9 +1618,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   private updateVolSurface(surface: VolSurfaceSeries | null): void {
-    this.volSurface.set(surface);
-    this.volSurfaceData = surface;
-    this.updateSurfaceGeometry();
+    this.liveVolSurface.set(surface);
   }
 
   private initVolSurface(): void {
@@ -1056,7 +1836,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     return maturityIdFromInstrumentName(instrumentName);
   }
 
-  private isSyntheticCurrency(currency: string | null): boolean {
+  isSyntheticCurrency(currency: string | null): boolean {
     return (currency ?? '').toUpperCase() === SYNTHETIC_CURRENCY;
   }
 
@@ -1132,6 +1912,9 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this.currentTickerInstrument !== instrumentName) {
       return;
     }
+    if (this.selectedInstrument() !== instrumentName) {
+      return;
+    }
 
     const previous = this.instrumentSummary();
     const normalizedIv = normalizeDeribitIv(ticker.mark_iv ?? ticker.iv);
@@ -1154,8 +1937,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       creation_timestamp: ticker.timestamp ?? previous?.creation_timestamp
     };
 
-    this.instrumentSummary.set(summary);
-    this.instrumentSummaryError.set(null);
+    this.store.dispatch(dashboardInstrumentSummaryUpdate({ summary }));
   }
 
   private onChainTickerUpdate(ticker: DeribitTickerData): void {
@@ -1169,7 +1951,6 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     }
 
     const chainsCopy = cloneChains(this.optionBuffers.chains);
-    this.chains.set(chainsCopy);
-    this.recomputeSmile(chainsCopy);
+    this.store.dispatch(dashboardChainsUpdate({ chains: chainsCopy }));
   }
 }

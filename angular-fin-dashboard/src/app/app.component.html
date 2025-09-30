@@ -54,107 +54,194 @@
         </p>
 
         <div class="app__volatility-layout">
-          <div
-            #smileContainer
-            class="app__smile"
-            role="img"
-            aria-label="volatility smile chart"
-            (mouseleave)="hideSmileTooltip()"
-          >
-            <div class="app__smile-y-axis">
-              <div class="app__smile-y-axis-ticks" *ngIf="smileAxis().ticks as ticks">
-                <span
-                  *ngFor="let tick of ticks; let idx = index"
-                  class="app__smile-y-tick"
-                  [class.app__smile-y-tick--minor]="idx !== 0 && idx !== ticks.length - 1"
-                >
-                  {{ tick.label }}
-                </span>
+          <div class="app__volatility-main">
+            <div class="app__volatility-controls">
+              <div class="app__volatility-controls-main">
+                <span class="app__surface-title">Volatility Surface</span>
+                <div class="app__surface-mode">
+                  <button
+                    type="button"
+                    class="app__surface-mode-button"
+                    [class.app__surface-mode-button--active]="!historicalMode()"
+                    (click)="setHistoricalMode(false)"
+                  >
+                    Live
+                  </button>
+                  <button
+                    type="button"
+                    class="app__surface-mode-button"
+                    [class.app__surface-mode-button--active]="historicalMode()"
+                    (click)="setHistoricalMode(true)"
+                    [disabled]="isSyntheticCurrency(selectedCurrency())"
+                  >
+                    Historical
+                  </button>
+                </div>
+                <div class="app__volatility-meta">
+                  <span>{{ volSurfaceSummary() }}</span>
+                </div>
               </div>
-              <span class="app__smile-y-label">IV (%)</span>
+
+              <div class="app__surface-controls" *ngIf="historicalMode()">
+                <div class="app__surface-controls-row app__surface-controls-row--settings">
+                  <label class="app__surface-interval">
+                    <span>Interval</span>
+                    <select
+                      [value]="historicalInterval()"
+                      (change)="setHistoricalInterval($any($event.target).value)"
+                      [disabled]="historicalLoading()"
+                    >
+                      <option *ngFor="let option of historicalIntervals" [value]="option.value">
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="app__surface-refresh"
+                    (click)="refreshHistoricalSnapshots()"
+                    [disabled]="historicalLoading()"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div class="app__surface-controls-row app__surface-controls-row--timeline">
+                  <button
+                    type="button"
+                    class="app__surface-step"
+                    (click)="stepHistoricalSnapshot(-1)"
+                    [disabled]="historicalLoading() || historicalSnapshots().length === 0 || historicalSelectedIndex() === 0"
+                    aria-label="Previous snapshot"
+                  >
+                    ←
+                  </button>
+                  <div class="app__surface-timeline">
+                    <button
+                      type="button"
+                      class="app__surface-timeline-point"
+                      *ngFor="let snapshot of historicalSnapshots(); let idx = index"
+                      [class.app__surface-timeline-point--active]="idx === historicalSelectedIndex()"
+                      (click)="selectHistoricalSnapshot(idx)"
+                      [disabled]="historicalLoading()"
+                      [attr.aria-pressed]="idx === historicalSelectedIndex()"
+                    >
+                      {{ snapshot.label }}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="app__surface-step"
+                    (click)="stepHistoricalSnapshot(1)"
+                    [disabled]="historicalLoading() || historicalSnapshots().length === 0 || historicalSelectedIndex() >= historicalSnapshots().length - 1"
+                    aria-label="Next snapshot"
+                  >
+                    →
+                  </button>
+                </div>
+                <div class="app__surface-status" *ngIf="historicalLoading()">Loading historical snapshots…</div>
+                <div class="app__surface-status app__surface-status--error" *ngIf="!historicalLoading() && historicalError()">
+                  {{ historicalError() }}
+                </div>
+              </div>
             </div>
-          <svg viewBox="0 0 600 160" preserveAspectRatio="none">
-            <g class="app__smile-grid" *ngIf="smileAxis().ticks.length">
-              <line
-                *ngFor="let tick of smileAxis().ticks"
-                x1="0"
-                x2="600"
-                [attr.y1]="tick.position"
-                [attr.y2]="tick.position"
-              ></line>
-            </g>
-            <ng-container *ngFor="let series of smileSeries()">
-              <g *ngIf="series.points.length > 0 && (!smileFilter() || smileFilter() === series.maturity)">
-                <polyline
-                  [attr.points]="series.path"
-                  fill="none"
-                  [attr.stroke]="series.color"
-                  [attr.stroke-width]="smileFilter() ? 3.5 : series.isSelected ? 3.5 : 2"
-                  stroke-linecap="round"
-                  [attr.opacity]="smileFilter() ? 0.95 : series.isSelected ? 0.95 : 0.65"
-                ></polyline>
-                <g *ngFor="let point of series.points">
-                  <circle
-                    [attr.cx]="point.x"
-                    [attr.cy]="point.y"
-                    [attr.r]="smileFilter() ? 3.5 : series.isSelected ? 3.5 : 2.5"
-                    [attr.fill]="series.color"
-                    [attr.opacity]="smileFilter() ? 0.95 : series.isSelected ? 0.9 : 0.5"
-                    (mouseenter)="showSmileTooltip($event, point, series)"
-                    (mouseleave)="hideSmileTooltip()"
-                  ></circle>
-                </g>
-              </g>
-            </ng-container>
-          </svg>
-          <div class="app__smile-tooltip" *ngIf="smileTooltip() as tooltip" [style.left.px]="tooltip.x" [style.top.px]="tooltip.y">
-            <span class="app__smile-tooltip__label">{{ tooltip.maturity }}</span>
-            <span class="app__smile-tooltip__strike">Strike {{ tooltip.strike }}</span>
-            <span class="app__smile-tooltip__iv">IV {{ tooltip.iv }}</span>
-          </div>
-          <div class="app__smile-axis">
-            <span>{{ smileAxis().minStrike }}</span>
-            <span>Strike</span>
-            <span>{{ smileAxis().maxStrike }}</span>
-          </div>
-          <div class="app__smile-legend" *ngIf="smileSeries().length > 0">
-            <button
-              type="button"
-              *ngFor="let series of smileSeries()"
-              class="app__smile-legend-item"
-              [class.app__smile-legend-item--active]="series.isSelected"
-              [class.app__smile-legend-item--filtered]="smileFilter() === series.maturity"
-              [disabled]="series.points.length === 0"
-              [attr.aria-pressed]="smileFilter() === series.maturity"
-              (click)="toggleSmileFilter(series.maturity)"
+
+            <div
+              #smileContainer
+              class="app__smile"
+              role="img"
+              aria-label="volatility smile chart"
+              (mouseleave)="hideSmileTooltip()"
             >
-              <span class="app__smile-legend-swatch" [style.background-color]="series.color"></span>
-              {{ series.label }}
-            </button>
-          </div>
+              <svg viewBox="0 0 600 160" preserveAspectRatio="none">
+                <g class="app__smile-grid" *ngIf="smileAxis().ticks.length">
+                  <line
+                    *ngFor="let tick of smileAxis().ticks"
+                    x1="0"
+                    x2="600"
+                    [attr.y1]="tick.position"
+                    [attr.y2]="tick.position"
+                  ></line>
+                </g>
+                <ng-container *ngFor="let series of smileSeries()">
+                  <g *ngIf="series.points.length > 0 && (!smileFilter() || smileFilter() === series.maturity)">
+                    <polyline
+                      [attr.points]="series.path"
+                      fill="none"
+                      [attr.stroke]="series.color"
+                      [attr.stroke-width]="smileFilter() ? 3.5 : series.isSelected ? 3.5 : 2"
+                      stroke-linecap="round"
+                      [attr.opacity]="smileFilter() ? 0.95 : series.isSelected ? 0.95 : 0.65"
+                    ></polyline>
+                    <g *ngFor="let point of series.points">
+                      <circle
+                        [attr.cx]="point.x"
+                        [attr.cy]="point.y"
+                        [attr.r]="smileFilter() ? 3.5 : series.isSelected ? 3.5 : 2.5"
+                        [attr.fill]="series.color"
+                        [attr.opacity]="smileFilter() ? 0.95 : series.isSelected ? 0.9 : 0.5"
+                        (mouseenter)="showSmileTooltip($event, point, series)"
+                        (mouseleave)="hideSmileTooltip()"
+                      ></circle>
+                    </g>
+                  </g>
+                </ng-container>
+              </svg>
+              <div class="app__smile-tooltip" *ngIf="smileTooltip() as tooltip" [style.left.px]="tooltip.x" [style.top.px]="tooltip.y">
+                <span class="app__smile-tooltip__label">{{ tooltip.maturity }}</span>
+                <span class="app__smile-tooltip__strike">Strike {{ tooltip.strike }}</span>
+                <span class="app__smile-tooltip__iv">IV {{ tooltip.iv }}</span>
+              </div>
+              <div class="app__smile-axis">
+                <span>{{ smileAxis().minStrike }}</span>
+                <span>Strike</span>
+                <span>{{ smileAxis().maxStrike }}</span>
+              </div>
+              <div class="app__smile-legend" *ngIf="smileSeries().length > 0">
+                <button
+                  type="button"
+                  *ngFor="let series of smileSeries()"
+                  class="app__smile-legend-item"
+                  [class.app__smile-legend-item--active]="series.isSelected"
+                  [class.app__smile-legend-item--filtered]="smileFilter() === series.maturity"
+                  [disabled]="series.points.length === 0"
+                  [attr.aria-pressed]="smileFilter() === series.maturity"
+                  (click)="toggleSmileFilter(series.maturity)"
+                >
+                  <span class="app__smile-legend-swatch" [style.background-color]="series.color"></span>
+                  {{ series.label }}
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div class="app__surface" *ngIf="volSurface() as surface; else surfacePlaceholder">
-            <div class="app__surface-header">
-              <span>Volatility Surface</span>
-              <span>
-                {{ surface.maturityLabels.length }} maturities · {{ surface.strikeLabels.length }} strikes ·
-                {{ surface.pointCount }} pts
-              </span>
-            </div>
-            <div class="app__surface-canvas-wrapper">
-              <canvas #volSurfaceCanvas class="app__surface-canvas"></canvas>
-            </div>
-            <div class="app__surface-axis">
-              <span>Strikes</span>
-              <span>Implied Vol</span>
-              <span>Maturities</span>
-            </div>
+          <div class="app__surface">
+            <ng-container *ngIf="volSurface() as surface; else surfacePlaceholder">
+              <div class="app__surface-canvas-wrapper">
+                <canvas #volSurfaceCanvas class="app__surface-canvas"></canvas>
+              </div>
+              <div class="app__surface-axis">
+                <span>Strikes</span>
+                <span>Implied Vol</span>
+                <span>Maturities</span>
+              </div>
+            </ng-container>
           </div>
         </div>
+
         <ng-template #surfacePlaceholder>
           <div class="app__surface app__surface--empty">
-            <span class="app__surface-empty">Insufficient option data to render a volatility surface.</span>
+            <span class="app__surface-empty" *ngIf="historicalMode() && historicalLoading()">
+              Loading historical surface…
+            </span>
+            <span class="app__surface-empty" *ngIf="historicalMode() && !historicalLoading() && historicalError()">
+              {{ historicalError() }}
+            </span>
+            <span class="app__surface-empty" *ngIf="historicalMode() && !historicalLoading() && !historicalError()">
+              No surface data for {{ activeHistoricalSnapshot()?.label || 'selected time' }}.
+            </span>
+            <span class="app__surface-empty" *ngIf="!historicalMode()">
+              Insufficient option data to render a volatility surface.
+            </span>
           </div>
         </ng-template>
 

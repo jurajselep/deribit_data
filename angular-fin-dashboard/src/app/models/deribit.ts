@@ -39,6 +39,26 @@ export interface DeribitListResponse<T> {
   testnet?: boolean;
 }
 
+export interface DeribitTrade {
+  trade_seq: number;
+  trade_id: string;
+  timestamp: number;
+  price: number;
+  mark_price?: number;
+  index_price?: number;
+  iv?: number;
+  instrument_name: string;
+  direction?: 'buy' | 'sell';
+  contracts?: number;
+  amount?: number;
+  tick_direction?: number;
+}
+
+export interface DeribitTradeList {
+  trades: DeribitTrade[];
+  has_more?: boolean;
+}
+
 export interface DeribitTickerGreeks {
   delta?: number;
   gamma?: number;
